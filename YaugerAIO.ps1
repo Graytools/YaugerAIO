@@ -654,7 +654,7 @@ Log "=============================================" "Cyan"
 Log "YaugerAIO tasks completed." "Blue"
 Write-Host ""
 
-$thankYouMessage = "Thank you so much for trying out YaugerAIO. If you have any questions, comments, feedback, or feature requests, please send inquiries to rick.yauger@outlook.com."
+$thankYouMessage = "Thanks for trying out my Windows AIO Maintenance Tool. For feature requests, or bug reports, please feel welcome to reach out to me at rick.yauger@outlook.com - alternatively, pull requests are welcome."
 $wrappedThankYou = Wrap-Text -Text $thankYouMessage -Width 130
 Log $wrappedThankYou "Blue"
 Write-Host ""
@@ -669,5 +669,6 @@ try {
 } catch {
     # No transcript active.
 }
+
 
 
