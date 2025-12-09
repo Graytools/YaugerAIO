@@ -341,7 +341,7 @@ function Install-WindowsUpdates {
 
 # --------------------------------------------------------------
 # Function to execute a DISM /CheckHealth scan.
-# Instead of showing all details, it logs full output and displays only a final alert message.
+# Log full output Message and display alert
 # --------------------------------------------------------------
 function Run-DISMCheckHealth {
     $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
@@ -669,4 +669,5 @@ try {
 } catch {
     # No transcript active.
 }
+
 
