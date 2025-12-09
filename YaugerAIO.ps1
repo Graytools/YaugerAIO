@@ -6,7 +6,7 @@
 .COPYRIGHT Copyright (c) Rick Yauger 2024
 .TAGS Maintenance Cleanup HealthCheck
 .LICENSEURI https://opensource.org/licenses/MIT
-.PROJECTURI https://github.com/yourgithub/yourrepo
+.PROJECTURI https://github.com/Graytools/YaugerAIO
 .RELEASENOTES
 Initial release to PowerShell Gallery.
 #>
@@ -669,3 +669,4 @@ try {
 } catch {
     # No transcript active.
 }
+
