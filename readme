@@ -35,9 +35,7 @@ SYSTEM MAINTENANCE
 WINDOWS UPDATES
 --------------------------------------------------------------------------------
  11. Update Check & Install
-     - If no updates found: displays "Windows Updates are current."
-     - If updates found   : lists each update in real-time (one line per update),
-                             downloads and installs them.
+     - Finds missing Windows Updates and installs them automatically.
      - Final summary is logged.
 
 LOGGING & REPORTING
@@ -98,3 +96,4 @@ providing detailed feedback and logs. It is a fast, no-nonsense way to clean,
 update, and check your system's health—all in one pass.
 
 Enjoy a smoother, faster, and more stable Windows experience with YaugerAIO!
+
