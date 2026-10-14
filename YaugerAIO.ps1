@@ -471,7 +471,35 @@ function Get-WindowsTempSize {
 function Clear-WindowsTemp {
     try {
         $tempPath = $env:TEMP
-        Remove-Item "$tempPath\*" -Recurse -Force -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($tempPath) -or -not (Test-Path -LiteralPath $tempPath -PathType Container)) {
+            Log "Skipped Windows Temp cleanup: TEMP directory is unavailable." "Yellow"
+            return
+        }
+
+        $resolvedPath = (Resolve-Path -LiteralPath $tempPath -ErrorAction Stop).ProviderPath
+        $pathRoot = [System.IO.Path]::GetPathRoot($resolvedPath)
+        if ([string]::IsNullOrWhiteSpace($pathRoot) -or $resolvedPath.TrimEnd('\', '/') -eq $pathRoot.TrimEnd('\', '/')) {
+            Log "Skipped Windows Temp cleanup: TEMP must not be a filesystem root." "Red"
+            return
+        }
+
+        $tempDirectory = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+        if (($tempDirectory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            Log "Skipped Windows Temp cleanup: TEMP must not be a symbolic link or junction." "Red"
+            return
+        }
+
+        $cleanupErrors = @()
+        foreach ($item in Get-ChildItem -LiteralPath $resolvedPath -Force -ErrorAction Stop) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                Log "Skipped link or junction in Windows Temp: $($item.Name)" "Yellow"
+                continue
+            }
+            Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable +cleanupErrors
+        }
+        if ($cleanupErrors.Count -gt 0) {
+            Log "Windows Temp cleanup could not remove $($cleanupErrors.Count) item(s), possibly because they are in use." "Yellow"
+        }
     } catch {
         Log "Failed to clear Windows Temp files: $_" "Red"
     }
