@@ -6,40 +6,55 @@ You don't need to know PowerShell to use it. Just follow the prompts.
 
 > **Heads up:** I'm still testing the updated version (1.5.1). The copy on PowerShell Gallery is older. The easy installation steps below are for **after** the update is published. If you're helping me test it now, skip to [Testing the new version](#testing-the-new-version).
 
-## Install it once
+## Install it and run it
 
-1. On your Windows computer, open the **Start** menu.
-2. Type **PowerShell** and open **Windows PowerShell**. You can open it normally; you don't need to right-click and choose Administrator.
-3. Copy and paste this, then press Enter:
+You don't have to open anything as Administrator. Windows will ask for permission when YaugerAIO actually starts.
+
+### If you opened PowerShell
+
+1. Open the Start menu, type **Windows PowerShell**, and open it normally.
+2. Paste these **two lines** and press Enter:
 
 ```powershell
-Install-Module YaugerAIO -Scope CurrentUser
+Install-Module YaugerAIO -Scope CurrentUser -ErrorAction Stop
+YaugerAIO
 ```
 
-PowerShell might ask permission to install a package provider or use the PowerShell Gallery. Read the prompt and answer **Y** if you want to continue installing YaugerAIO.
+**First line:** downloads and installs YaugerAIO for your Windows account. It doesn't run any cleanup.
 
-That's the installation. You only need to do it once.
+**Second line:** starts YaugerAIO. You'll get a Windows administrator permission prompt, followed by the guided maintenance window.
 
-## Run it whenever you want
+The installation command itself doesn't tell you what to type next. That's why both lines are here, ready to paste. PowerShell might ask you to approve the PowerShell Gallery or install a package provider. Read those prompts and agree if you want to proceed.
 
-Open PowerShell again and enter:
+### If you opened Command Prompt (CMD)
+
+CMD doesn't understand PowerShell commands on its own. Paste this **single line** into CMD instead:
+
+```cmd
+powershell -NoProfile -Command "Install-Module YaugerAIO -Scope CurrentUser -ErrorAction Stop; YaugerAIO"
+```
+
+It opens PowerShell behind the scenes, installs the module, then starts the same maintenance window. This works whether CMD is opened normally or as Administrator.
+
+### Next time, you don't need to install it again
+
+From **PowerShell**, just type:
 
 ```powershell
 YaugerAIO
 ```
 
-That's it. Windows will ask whether to allow the tool to run as an administrator. Click **Yes** if you want to proceed. If your Windows account isn't an administrator, you may need an administrator's password.
+From **CMD**, type:
 
-A new PowerShell window will open and walk you through the cleanup. It will ask before running the optional disk and temporary-file cleanups. You don't have to open PowerShell as administrator yourself.
-
-If you prefer to load the module yourself first, this also works:
-
-```powershell
-Import-Module YaugerAIO
-YaugerAIO
+```cmd
+powershell -NoProfile -Command "YaugerAIO"
 ```
 
-The older command, `Start-YaugerAIOWorkflow`, still works too.
+Windows will ask for administrator permission when necessary. Click **Yes** to continue; if you're signed in with a standard Windows account, you may need an administrator's password. A separate console will open so you can follow the prompts and read the results.
+
+If you have an older YaugerAIO already installed, run `Update-Module YaugerAIO` in PowerShell after 1.5.1 is published.
+
+You can also explicitly load the module with `Import-Module YaugerAIO` before running `YaugerAIO`, but you shouldn't have to. The longer command, `Start-YaugerAIOWorkflow`, remains available too.
 
 ## What does it actually do?
 
