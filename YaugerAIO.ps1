@@ -509,7 +509,7 @@ function Install-WindowsUpdates {
     }
 }
 
-# /CheckHealth is diagnostic only. It won't repair the component store.
+# CheckHealth looks for component store damage before we offer a repair.
 function Get-DISMCheckHealthStatus {
     param(
         [string]$Output,
@@ -522,41 +522,103 @@ function Get-DISMCheckHealthStatus {
     return 'Unknown'
 }
 
+# The initial check is quick. Ask before starting the potentially lengthy repair.
 function Run-DISMCheckHealth {
-    Write-Host "Checking Windows component store health (DISM /CheckHealth)..." -ForegroundColor Cyan
+    Write-Host "Checking Windows repair files (DISM /CheckHealth)..." -ForegroundColor Cyan
     try {
         $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
         $exitCode = $LASTEXITCODE
         $status = Get-DISMCheckHealthStatus -Output $dismOutput -ExitCode $exitCode
-        $script:log += "DISM /CheckHealth status: $status (exit code $exitCode)`n$dismOutput`n"
+        $script:log += "DISM /CheckHealth status: $status (exit code $exitCode)" + [Environment]::NewLine + $dismOutput
 
         switch ($status) {
-            'Healthy' { 
-                Add-MaintenanceResult -Name 'DISM component store' -Status PASS -Summary 'No component store corruption detected.'
-                Write-Host "No component store corruption detected. Moving on to SFC." -ForegroundColor Green
-            }
-            'NotRepairable' {
-                Add-MaintenanceResult -Name 'DISM component store' -Status FAIL -Summary 'Component store reported not repairable.' -Action 'Review DISM output and seek advanced servicing or recovery support.'
-                Write-Host "DISM reports that the component store is not repairable. Further troubleshooting is required." -ForegroundColor Red
+            'Healthy' {
+                Add-MaintenanceResult -Name 'Windows repair check' -Status PASS -Summary 'Windows did not report damage to its repair files.'
+                Write-Host "Windows repair files look healthy. Moving on to SFC." -ForegroundColor Green
             }
             'Repairable' {
-                Add-MaintenanceResult -Name 'DISM component store' -Status WARN -Summary 'Repairable component store corruption detected, but no repair was performed.' -Action 'Run DISM /Online /Cleanup-Image /RestoreHealth from an elevated prompt, then rerun SFC.'
-                Write-Host "DISM detected repairable corruption. /CheckHealth does not repair it; consider DISM /RestoreHealth." -ForegroundColor Yellow
+                Write-Host "Windows found damage it may be able to repair." -ForegroundColor Yellow
+                Write-Host "Try DISM repair now? This can take 20-30 minutes or longer and may need internet access. (Y/N)" -ForegroundColor Yellow
+                $choice = [Console]::ReadKey($true)
+                if ($choice.KeyChar.ToString().ToUpperInvariant() -eq 'Y') {
+                    Invoke-DISMRestoreHealth
+                } else {
+                    Add-MaintenanceResult -Name 'Windows repair check' -Status WARN -Summary 'Repairable Windows damage was found. You chose not to run the repair.' -Action 'Run YaugerAIO again and accept Windows repair, or ask a technician for help.'
+                    Write-Host "Windows repair skipped. Continuing with SFC." -ForegroundColor Yellow
+                }
+            }
+            'NotRepairable' {
+                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows reported damage that this repair command cannot fix.' -Action 'Have a technician review the DISM details and Windows recovery options.'
+                Write-Host "Windows reports damage that DISM cannot repair automatically." -ForegroundColor Red
             }
             'Failed' {
-                Add-MaintenanceResult -Name 'DISM component store' -Status FAIL -Summary "DISM failed with exit code $exitCode." -Action 'Review the technical log and retry DISM from an elevated prompt.'
-                Write-Host "DISM /CheckHealth failed (exit code $exitCode). Review the output in the log." -ForegroundColor Red
+                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary "The Windows repair check failed (DISM exit code $exitCode)." -Action 'Check the technical log, then ask a technician to investigate Windows servicing.'
+                Write-Host "The Windows repair check failed. Review the technical log." -ForegroundColor Red
             }
             default {
-                Add-MaintenanceResult -Name 'DISM component store' -Status CHECK -Summary 'DISM result was not recognized.' -Action 'Read the raw DISM output in the technical log before drawing a conclusion.'
-                Write-Host "DISM completed, but its health status was not recognized. See the logged output." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair check' -Status CHECK -Summary 'Windows repair check finished, but its result could not be confirmed.' -Action 'Review the DISM details in the technical log before deciding whether to repair.'
+                Write-Host "DISM returned an unrecognized result. Repair was not started." -ForegroundColor Yellow
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'DISM component store' -Status FAIL -Summary 'DISM could not start or process its output.' -Action 'Review the technical log and confirm Windows servicing tools are available.'
-        Log "DISM /CheckHealth could not run: $_" "Red"
+        Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'The Windows repair check or repair prompt could not finish.' -Action 'Review the technical log and verify that DISM is available.'
+        Log "DISM /CheckHealth or repair prompt failed: $_" "Red"
     }
     Write-Host ""
+}
+
+# A zero exit code is not enough to claim the repair worked; recheck Windows afterward.
+function Get-DISMRepairVerificationStatus {
+    param(
+        [int]$RepairExitCode,
+        [string]$CheckStatus
+    )
+    if ($RepairExitCode -ne 0) { return 'Failed' }
+    if ($CheckStatus -eq 'Healthy') { return 'Repaired' }
+    if ($CheckStatus -in @('Repairable', 'NotRepairable')) { return 'Unresolved' }
+    return 'Unverified'
+}
+
+function Invoke-DISMRestoreHealth {
+    Write-Host "Repairing Windows files with DISM /RestoreHealth. Please leave this window open..." -ForegroundColor Cyan
+    try {
+        $repairLines = @()
+        & dism.exe /Online /Cleanup-Image /RestoreHealth 2>&1 | Tee-Object -Variable repairLines | Out-Host
+        $repairExitCode = $LASTEXITCODE
+        $repairOutput = $repairLines | Out-String
+        $script:log += "DISM /RestoreHealth exit code: $repairExitCode" + [Environment]::NewLine + $repairOutput
+
+        if ($repairExitCode -ne 0) {
+            Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'DISM could not finish the repair.' -Action 'Review the repair details in the technical log. Windows Update or a technician may be needed.'
+            Write-Host "Windows repair failed. Continuing to SFC." -ForegroundColor Red
+            return
+        }
+
+        Write-Host "Checking whether Windows now reports its repair files as healthy..." -ForegroundColor Cyan
+        $verifyOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
+        $verifyExitCode = $LASTEXITCODE
+        $checkStatus = Get-DISMCheckHealthStatus -Output $verifyOutput -ExitCode $verifyExitCode
+        $script:log += "DISM post-repair /CheckHealth status: $checkStatus (exit code $verifyExitCode)" + [Environment]::NewLine + $verifyOutput
+
+        $result = Get-DISMRepairVerificationStatus -RepairExitCode $repairExitCode -CheckStatus $checkStatus
+        switch ($result) {
+            'Repaired' {
+                Add-MaintenanceResult -Name 'Windows repair' -Status PASS -Summary 'Windows found damage, DISM ran a repair, and a follow-up check reported no remaining damage.'
+                Write-Host "Windows reports that the repair worked. SFC will check system files next." -ForegroundColor Green
+            }
+            'Unresolved' {
+                Add-MaintenanceResult -Name 'Windows repair' -Status WARN -Summary 'DISM finished, but Windows still reports damage.' -Action 'Review the technical log and ask a technician to check Windows servicing or recovery options.'
+                Write-Host "DISM finished, but Windows still reports damage." -ForegroundColor Yellow
+            }
+            default {
+                Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM finished, but the follow-up check could not confirm the repair.' -Action 'Review the DISM results in the technical log before assuming Windows is repaired.'
+                Write-Host "The repair finished, but YaugerAIO could not confirm the result." -ForegroundColor Yellow
+            }
+        }
+    } catch {
+        Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'The repair or its follow-up check could not finish.' -Action 'Review the technical log and Windows servicing status.'
+        Log "DISM /RestoreHealth could not finish: $_" "Red"
+    }
 }
 
 # SFC messages vary by Windows version and language. Unknown output isn't a pass.
@@ -927,8 +989,8 @@ Clear-BrowserCaches
 
 # Explain the DISM check before it starts.
 Write-Host ""
-Write-Host "We're about to check the component store using DISM /CheckHealth. This check detects problems but does not repair them." -ForegroundColor Yellow
-Write-Host "If it's taking longer than expected, please be patient as it verifies the component store." -ForegroundColor Yellow
+Write-Host "We'll check Windows repair files and offer to fix any repairable damage found." -ForegroundColor Yellow
+Write-Host "A repair only starts if you agree to it; it can take a while." -ForegroundColor Yellow
 Start-Sleep -Seconds 3
 Write-Host ""
 
