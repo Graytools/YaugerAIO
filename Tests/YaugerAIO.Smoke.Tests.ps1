@@ -74,7 +74,7 @@ Describe 'YaugerAIO release smoke tests' {
         $consoleResize = $source.IndexOf('$host.UI.RawUI.BufferSize')
         $uacCheck | Should -BeGreaterThan 0
         $consoleResize | Should -BeGreaterThan $uacCheck
-        $source | Should -Match 'Start-Process -FilePath \\$psCmd -Verb RunAs'
+        $source | Should -Match 'Start-Process -FilePath \$psCmd -Verb RunAs'
         $source | Should -Match 'No maintenance was started'
     }
 
