@@ -1,6 +1,4 @@
-# Pester 5 smoke tests for the PowerShell Gallery release.
-# These tests must be safe to run on macOS, Windows, or CI.
-# IMPORTANT: Do not dot-source or invoke YaugerAIO.ps1 here; it runs system maintenance.
+# Import and metadata checks only; dot-sourcing YaugerAIO.ps1 would actually run maintenance.
 
 BeforeAll {
     $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -39,6 +37,17 @@ Describe 'YaugerAIO release smoke tests' {
         Import-Module -Name $manifestPath -Force -ErrorAction Stop
         $command = Get-Command -Name 'Start-YaugerAIOWorkflow' -Module 'YaugerAIO' -ErrorAction Stop
         $command.CommandType | Should -Be 'Function'
+    }
+
+    It 'exports a short YaugerAIO command without running any maintenance during import' {
+        Import-Module -Name $manifestPath -Force -ErrorAction Stop
+        $command = Get-Command -Name 'YaugerAIO' -Module 'YaugerAIO' -ErrorAction Stop
+        $command.CommandType | Should -Be 'Function'
+    }
+
+    It 'routes the short command through the existing Windows-only launcher' -Skip:($env:OS -eq 'Windows_NT') {
+        Import-Module -Name $manifestPath -Force -ErrorAction Stop
+        { YaugerAIO } | Should -Throw '*requires Windows*'
     }
 
     It 'retains the functions required by the original maintenance workflow' {
