@@ -44,7 +44,9 @@ Describe 'YaugerAIO readable reporting' {
         $report | Should -Match '1 passed \| 1 warnings \| 1 failed \| 1 unverified \| 1 skipped'
         $report | Should -Match 'Run DISM RestoreHealth'
         $report | Should -Match 'YaugerAIO_Technical_test.txt'
-        $report.IndexOf('WHAT TO DO NEXT') | Should -BeLessThan $report.IndexOf('CHECK RESULTS')
+        $actionsPosition = $report.IndexOf('WHAT TO DO NEXT')
+        $resultsPosition = $report.IndexOf('CHECK RESULTS')
+        $actionsPosition | Should -BeLessThan $resultsPosition
     }
 
     It 'reports a required restart as a next step' {
