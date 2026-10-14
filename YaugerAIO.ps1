@@ -340,40 +340,82 @@ function Install-WindowsUpdates {
 }
 
 # --------------------------------------------------------------
-# Function to execute a DISM /CheckHealth scan.
-# Log full output Message and display alert
+# DISM /CheckHealth only DETECTS component store problems.
+# Keep result classification separate so it can be tested safely.
 # --------------------------------------------------------------
+function Get-DISMCheckHealthStatus {
+    param(
+        [string]$Output,
+        [int]$ExitCode
+    )
+    if ($ExitCode -ne 0) { return 'Failed' }
+    if ($Output -match 'No component store corruption detected') { return 'Healthy' }
+    if ($Output -match 'component store is not repairable') { return 'NotRepairable' }
+    if ($Output -match 'component store is repairable') { return 'Repairable' }
+    return 'Unknown'
+}
+
 function Run-DISMCheckHealth {
     Write-Host "Checking Windows component store health (DISM /CheckHealth)..." -ForegroundColor Cyan
-    $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
-    $exitCode = $LASTEXITCODE
-    $script:log += "DISM /CheckHealth Output:`n$dismOutput`n"
+    try {
+        $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
+        $exitCode = $LASTEXITCODE
+        $status = Get-DISMCheckHealthStatus -Output $dismOutput -ExitCode $exitCode
+        $script:log += "DISM /CheckHealth status: $status (exit code $exitCode)`n$dismOutput`n"
 
-    if ($exitCode -ne 0) {
-        Write-Host "DISM /CheckHealth failed (exit code $exitCode). Review the output in the log." -ForegroundColor Red
-    }
-    elseif ($dismOutput -match "No component store corruption detected") {
-        Write-Host "No component store corruption detected. Moving on to SFC." -ForegroundColor Green
-    }
-    elseif ($dismOutput -match "component store is not repairable") {
-        Write-Host "DISM reports that the component store is not repairable. Further troubleshooting is required." -ForegroundColor Red
-    }
-    elseif ($dismOutput -match "component store is repairable") {
-        Write-Host "DISM detected repairable corruption. /CheckHealth does not repair it; consider DISM /RestoreHealth." -ForegroundColor Yellow
-    }
-    else {
-        Write-Host "DISM completed, but its health status was not recognized. See the logged output." -ForegroundColor Yellow
+        switch ($status) {
+            'Healthy' { Write-Host "No component store corruption detected. Moving on to SFC." -ForegroundColor Green }
+            'NotRepairable' { Write-Host "DISM reports that the component store is not repairable. Further troubleshooting is required." -ForegroundColor Red }
+            'Repairable' { Write-Host "DISM detected repairable corruption. /CheckHealth does not repair it; consider DISM /RestoreHealth." -ForegroundColor Yellow }
+            'Failed' { Write-Host "DISM /CheckHealth failed (exit code $exitCode). Review the output in the log." -ForegroundColor Red }
+            default { Write-Host "DISM completed, but its health status was not recognized. See the logged output." -ForegroundColor Yellow }
+        }
+    } catch {
+        Log "DISM /CheckHealth could not run: $_" "Red"
     }
     Write-Host ""
 }
 
 # -------------------------------
-# SFC Scan Function: Output native SFC results in real time.
+# SFC /scannow can repair files. Interpret known result messages conservatively;
+# unknown or localized output must not be reported as a successful repair.
 # -------------------------------
+function Get-SFCScanStatus {
+    param(
+        [string]$Output,
+        [int]$ExitCode
+    )
+    if ($ExitCode -ne 0) { return 'Failed' }
+    if ($Output -match 'found corrupt files but was unable to fix some of them') { return 'Unresolved' }
+    if ($Output -match 'found corrupt files and successfully repaired them') { return 'Repaired' }
+    if ($Output -match 'did not find any integrity violations') { return 'Healthy' }
+    if ($Output -match 'could not perform the requested operation|could not start the repair service|system repair pending') { return 'Failed' }
+    return 'Unknown'
+}
+
 function Run-SFCScan {
     Write-Host "Executing SFC Scan..." -ForegroundColor Cyan
-    & sfc.exe /scannow
+    try {
+        # Tee-Object keeps SFC's native output visible while capturing it for the desktop log.
+        $sfcLines = @()
+        & sfc.exe /scannow 2>&1 | Tee-Object -Variable sfcLines
+        $exitCode = $LASTEXITCODE
+        $sfcOutput = $sfcLines | Out-String
+        $status = Get-SFCScanStatus -Output $sfcOutput -ExitCode $exitCode
+        $script:log += "SFC /scannow status: $status (exit code $exitCode)`n$sfcOutput`n"
+
+        switch ($status) {
+            'Healthy' { Write-Host "SFC found no integrity violations." -ForegroundColor Green }
+            'Repaired' { Write-Host "SFC reports that corrupt system files were repaired." -ForegroundColor Green }
+            'Unresolved' { Write-Host "SFC could not repair all corrupt files. Review CBS.log for details." -ForegroundColor Yellow }
+            'Failed' { Write-Host "SFC did not complete successfully (exit code $exitCode). Review the output in the log." -ForegroundColor Red }
+            default { Write-Host "SFC completed, but its result was not recognized. Review the output in the log." -ForegroundColor Yellow }
+        }
+    } catch {
+        Log "SFC scan could not run: $_" "Red"
+    }
 }
+
 
 # --------------------------------------------------------------
 # Functions for clearing browser caches, disk cleanup, and temporary files.
@@ -655,7 +697,7 @@ Clear-BrowserCaches
 
 # --- Warning for DISM scan ---
 Write-Host ""
-Write-Host "We're about to run DISM Scan to check for component store corruption. If we find and fix anything, we'll let you know." -ForegroundColor Yellow
+Write-Host "We're about to check the component store using DISM /CheckHealth. This check detects problems but does not repair them." -ForegroundColor Yellow
 Write-Host "If it's taking longer than expected, please be patient as it verifies the component store." -ForegroundColor Yellow
 Start-Sleep -Seconds 3
 Write-Host ""
