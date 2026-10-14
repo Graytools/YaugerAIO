@@ -1,5 +1,4 @@
-# YaugerAIO module entry point.
-# Importing this module must never execute system maintenance.
+# Loading the module only registers commands. Maintenance starts when the user runs one.
 
 function Start-YaugerAIOWorkflow {
     [CmdletBinding()]
@@ -14,10 +13,16 @@ function Start-YaugerAIOWorkflow {
         throw "Maintenance script was not found: $scriptPath"
     }
 
-    # The original workflow performs privileged Windows maintenance.
-    # Launch it only on explicit request, in a separate elevated console.
+    # Open a separate elevated console so the prompts and results remain visible.
     $arguments = @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $scriptPath))
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -ErrorAction Stop
 }
 
-Export-ModuleMember -Function 'Start-YaugerAIOWorkflow'
+function YaugerAIO {
+    [CmdletBinding()]
+    param()
+
+    Start-YaugerAIOWorkflow
+}
+
+Export-ModuleMember -Function 'YaugerAIO', 'Start-YaugerAIOWorkflow'
