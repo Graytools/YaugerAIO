@@ -1,6 +1,4 @@
-# Tests the interpretation of simulated DISM and SFC output.
-# Never run the actual DISM or SFC executables in Pester/CI.
-# Only the two pure result-classification functions are loaded from the script.
+# DISM and SFC results are faked here; the tests should never run either tool.
 
 BeforeAll {
     $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'YaugerAIO.ps1'
