@@ -550,8 +550,8 @@ function Read-YaugerSharedText {
     $stream = $null
     $reader = $null
     try {
-        $stream = New-Object System.IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
-        $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::Default, $true)
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::Default, $true)
         return $reader.ReadToEnd()
     } catch {
         return ''
@@ -625,7 +625,7 @@ function Invoke-YaugerNativeTask {
             }
             $captured = Read-YaugerSharedText -Path $outFile
             $percent = Get-YaugerNativePercent -Output $captured
-            $elapsedText = ('{0:mm\:ss}' -f ((Get-Date) - $startedAt))
+            $elapsedText = ('{0:hh\:mm\:ss}' -f ((Get-Date) - $startedAt))
             $progress = if ($percent) { "reported $percent" } else { 'running' }
             $line = "$Label - $progress | $elapsedText | SPACE: skip to $NextStep"
             if ($line -ne $lastDisplay) {
