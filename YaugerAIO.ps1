@@ -1,5 +1,5 @@
 ﻿<#PSScriptInfo
-.VERSION 1.5.2
+.VERSION 1.5.3
 .GUID ed3b18c9-b76d-4ba2-b3b4-59b1bf8e2113
 .AUTHOR Rick Yauger
 .COMPANYNAME SoHo Integration, LLC
@@ -8,7 +8,7 @@
 .LICENSEURI https://opensource.org/licenses/MIT
 .PROJECTURI https://github.com/Graytools/YaugerAIO
 .RELEASENOTES
-Guided Windows maintenance with optional DISM repairs, automatic elevation, and readable reports.
+Guided Windows maintenance with live DISM and SFC progress, Spacebar skip and one complete report.
 #>
 
 # Ask Windows for admin rights before doing anything with the console.
