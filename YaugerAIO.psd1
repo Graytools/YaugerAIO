@@ -24,27 +24,13 @@
     PowerShellVersion = '5.1'
 
     # Functions to export from this module
-    FunctionsToExport = @(
-        'Check-DiskSpace',
-        'Check-CPUUsage',
-        'Check-RAMUsage',
-        'Check-GPUDrivers',
-        'Check-SystemUptime',
-        'Clear-BrowserCaches',
-        'Clear-WindowsTemp',
-        'Flush-DNSCache',
-        'Get-WindowsTempSize',
-        'Install-WindowsUpdates',
-        'Run-DISMCheckHealth',
-        'Run-SFCScan',
-        'Get-SystemHealthThreaded'
-    )
+    FunctionsToExport = @('Start-YaugerAIOWorkflow')
 
     # Cmdlets to export from this module
     CmdletsToExport = @()
 
     # Variables to export from this module
-    VariablesToExport = '*'
+    VariablesToExport = @()
 
     # Aliases to export from this module
     AliasesToExport = @()
