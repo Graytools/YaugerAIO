@@ -1,4 +1,4 @@
-<#PSScriptInfo
+﻿<#PSScriptInfo
 .VERSION 1.2.2
 .GUID ed3b18c9-b76d-4ba2-b3b4-59b1bf8e2113
 .AUTHOR Rick Yauger
