@@ -185,7 +185,7 @@ function Format-YaugerMaintenanceReport {
     [void]$lines.Add(('Finished: ' + $FinishedAt.ToString('yyyy-MM-dd HH:mm:ss')))
     [void]$lines.Add(('Duration: ' + ([math]::Round(($FinishedAt - $StartedAt).TotalMinutes, 1)) + ' minutes'))
     [void]$lines.Add(('System drive: ' + $Drive))
-    [void]$lines.Add(('Estimated disk space reclaimed: ' + $SpaceFreed))
+    [void]$lines.Add(('Change in available disk space: ' + $SpaceFreed))
     [void]$lines.Add(('Restart required by Windows Update: ' + $(if ($RestartRequired) { 'YES' } else { 'Not reported' })))
     [void]$lines.Add('')
 
@@ -197,7 +197,18 @@ function Format-YaugerMaintenanceReport {
 
     [void]$lines.Add('AT A GLANCE')
     [void]$lines.Add('-----------')
-    [void]$lines.Add(("{0} passed | {1} warnings | {2} failed | {3} unverified | {4} skipped" -f $passed,$warnings,$failures,$checks,$skipped))
+    if ($failures -gt 0) {
+        [void]$lines.Add('Overall: Some maintenance steps failed. Read the next section.')
+    } elseif ($warnings -gt 0) {
+        [void]$lines.Add('Overall: Some things still need attention.')
+    } elseif ($checks -gt 0) {
+        [void]$lines.Add('Overall: Some results could not be confirmed.')
+    } elseif ($passed -gt 0) {
+        [void]$lines.Add('Overall: No problems reported by the completed checks.')
+    } else {
+        [void]$lines.Add('Overall: No completed checks were recorded.')
+    }
+    [void]$lines.Add(("Passed: {0} | Warnings: {1} | Failed: {2} | Unverified: {3} | Skipped: {4}" -f $passed,$warnings,$failures,$checks,$skipped))
     [void]$lines.Add('')
     [void]$lines.Add('WHAT TO DO NEXT')
     [void]$lines.Add('---------------')
@@ -1010,22 +1021,35 @@ Install-WindowsUpdates
 
 # Write both reports after the last maintenance step.
 Write-Host ""
-$finalFree = (Get-PSDrive -Name $selectedDrive.Substring(0,1)).Free
-$spaceFreedBytes = $finalFree - $initialFreeSpace
-if ($spaceFreedBytes -lt 0) { $spaceFreedBytes = 0 }
-if ($spaceFreedBytes -ge 1GB) {
-    $spaceFreedFormatted = ("{0:N2} GB" -f ($spaceFreedBytes / 1GB))
-} else {
-    $spaceFreedFormatted = ("{0:N2} MB" -f ($spaceFreedBytes / 1MB))
+$spaceChangeFormatted = 'Not measured'
+try {
+    $finalFree = (Get-PSDrive -Name $selectedDrive.Substring(0,1) -ErrorAction Stop).Free
+    $spaceChangeBytes = $finalFree - $initialFreeSpace
+    $spaceChangeAbsolute = [math]::Abs($spaceChangeBytes)
+    $spaceChangeUnit = if ($spaceChangeAbsolute -ge 1GB) { 'GB' } else { 'MB' }
+    $spaceChangeValue = if ($spaceChangeUnit -eq 'GB') {
+        [math]::Round($spaceChangeAbsolute / 1GB, 2)
+    } else {
+        [math]::Round($spaceChangeAbsolute / 1MB, 2)
+    }
+    $spaceChangeFormatted = if ($spaceChangeBytes -gt 0) {
+        "$spaceChangeValue $spaceChangeUnit more free"
+    } elseif ($spaceChangeBytes -lt 0) {
+        "$spaceChangeValue $spaceChangeUnit less free"
+    } else {
+        'No change measured'
+    }
+} catch {
+    Log "Unable to measure final disk space: $_" "Yellow"
 }
-Log "Estimated drive space reclaimed this session: $spaceFreedFormatted" "Cyan"
+Log "Change in available disk space (approximate): $spaceChangeFormatted" "Cyan"
 $finishedAt = Get-Date
 Log ("Total script runtime: " + ($finishedAt - $script:StartTime).ToString()) "Cyan"
 Log "=============================================" "Cyan"
 Log "YaugerAIO maintenance workflow completed." "Blue"
 
 $technicalFileName = "YaugerAIO_Technical_$timestamp.txt"
-$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceFreedFormatted -RestartRequired $script:needsRestart -TechnicalFile $technicalFileName
+$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceChangeFormatted -RestartRequired $script:needsRestart -TechnicalFile $technicalFileName
 $technicalText = @(
     'YaugerAIO | Technical Diagnostic Log',
     ('Computer: ' + $env:COMPUTERNAME),
