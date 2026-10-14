@@ -142,14 +142,30 @@ $script:maintenanceResults = @()
 $script:foundAndFixedCorruption = $false
 $script:runDiskCleanup = $false
 $script:needsRestart = $false
+$script:choices = @()
+$script:stepStartedAt = $null
+$script:servicingStopUnconfirmed = $false
 
 function Log {
     param([string]$message, [string]$color = "Cyan")
-    $script:log += $message
+    $script:log += ('[{0:HH:mm:ss}] {1}' -f (Get-Date), $message)
     Write-Host $message -ForegroundColor $color
 }
 
-# Store short outcomes separately from the detailed console messages.
+function Start-YaugerStep {
+    param([string]$Name)
+    $script:stepStartedAt = Get-Date
+    $script:log += ('[{0:HH:mm:ss}] START {1}' -f $script:stepStartedAt, $Name)
+}
+
+function Record-YaugerChoice {
+    param([string]$Description)
+    $entry = ('{0:HH:mm:ss} - {1}' -f (Get-Date), $Description)
+    $script:choices += $entry
+    $script:log += "CHOICE $entry"
+}
+
+# Record each task once, including skipped and interrupted operations.
 function Add-MaintenanceResult {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -157,15 +173,21 @@ function Add-MaintenanceResult {
         [Parameter(Mandatory = $true)][string]$Summary,
         [string]$Action = ''
     )
+    $seconds = if ($null -ne $script:stepStartedAt) {
+        [math]::Round(((Get-Date) - $script:stepStartedAt).TotalSeconds, 1)
+    } else { $null }
     $script:maintenanceResults += [PSCustomObject]@{
-        Name    = $Name
-        Status  = $Status
+        Name = $Name
+        Status = $Status
         Summary = $Summary
-        Action  = $Action
+        Action = $Action
+        DurationSeconds = $seconds
     }
+    $script:log += ('[{0:HH:mm:ss}] RESULT [{1}] {2} - {3} (step elapsed: {4} sec)' -f (Get-Date), $Status, $Name, $Summary, $seconds)
+    if ($Action) { $script:log += "FOLLOW-UP $Name - $Action" }
 }
 
-# Build the report from results collected during the run.
+# Keep the decisions and summary first. The same file carries full task details afterward.
 function Format-YaugerMaintenanceReport {
     param(
         [object[]]$Results = @(),
@@ -175,18 +197,20 @@ function Format-YaugerMaintenanceReport {
         [string]$Drive = 'Unknown',
         [string]$SpaceFreed = 'Not measured',
         [bool]$RestartRequired = $false,
-        [string]$TechnicalFile = ''
+        [string[]]$Choices = @(),
+        [string[]]$Details = @()
     )
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    [void]$lines.Add('YAUGERAIO | WINDOWS MAINTENANCE REPORT')
-    [void]$lines.Add('=====================================')
+    [void]$lines.Add('YAUGERAIO 1.5.3 | WINDOWS MAINTENANCE REPORT')
+    [void]$lines.Add('=============================================')
     [void]$lines.Add(('Computer: ' + $ComputerName))
     [void]$lines.Add(('Started:  ' + $StartedAt.ToString('yyyy-MM-dd HH:mm:ss')))
     [void]$lines.Add(('Finished: ' + $FinishedAt.ToString('yyyy-MM-dd HH:mm:ss')))
-    [void]$lines.Add(('Duration: ' + ([math]::Round(($FinishedAt - $StartedAt).TotalMinutes, 1)) + ' minutes'))
+    [void]$lines.Add(('Total time: ' + ([math]::Round(($FinishedAt - $StartedAt).TotalMinutes, 1)) + ' minutes (includes time spent answering prompts)'))
     [void]$lines.Add(('System drive: ' + $Drive))
-    [void]$lines.Add(('Change in available disk space: ' + $SpaceFreed))
-    [void]$lines.Add(('Restart required by Windows Update: ' + $(if ($RestartRequired) { 'YES' } else { 'Not reported' })))
+    [void]$lines.Add(('Change in available drive space: ' + $SpaceFreed))
+    [void]$lines.Add('This is a before-and-after estimate, not an exact amount deleted by YaugerAIO.')
+    [void]$lines.Add(('Restart requested by Windows Update: ' + $(if ($RestartRequired) { 'YES' } else { 'Not reported' })))
     [void]$lines.Add('')
 
     $passed = @($Results | Where-Object { $_.Status -eq 'PASS' }).Count
@@ -198,67 +222,78 @@ function Format-YaugerMaintenanceReport {
     [void]$lines.Add('AT A GLANCE')
     [void]$lines.Add('-----------')
     if ($failures -gt 0) {
-        [void]$lines.Add('Overall: Some maintenance steps failed. Read the next section.')
+        [void]$lines.Add('Some maintenance steps failed. Please review the next steps.')
     } elseif ($warnings -gt 0) {
-        [void]$lines.Add('Overall: Some things still need attention.')
+        [void]$lines.Add('Some items still need attention.')
     } elseif ($checks -gt 0) {
-        [void]$lines.Add('Overall: Some results could not be confirmed.')
+        [void]$lines.Add('Some results could not be confirmed.')
     } elseif ($passed -gt 0) {
-        [void]$lines.Add('Overall: No problems reported by the completed checks.')
+        [void]$lines.Add('No problems were reported by the completed checks.')
     } else {
-        [void]$lines.Add('Overall: No completed checks were recorded.')
+        [void]$lines.Add('No completed checks were recorded.')
     }
     [void]$lines.Add(("Passed: {0} | Warnings: {1} | Failed: {2} | Unverified: {3} | Skipped: {4}" -f $passed,$warnings,$failures,$checks,$skipped))
     [void]$lines.Add('')
+
     [void]$lines.Add('WHAT TO DO NEXT')
     [void]$lines.Add('---------------')
-
-    $actionItems = @($Results | Where-Object {
-        $_.Status -in @('FAIL', 'WARN', 'CHECK') -and -not [string]::IsNullOrWhiteSpace($_.Action)
-    })
-    $actionNumber = 0
-    foreach ($item in $actionItems) {
-        $actionNumber++
-        [void]$lines.Add(('{0}. [{1}] {2}' -f $actionNumber, $item.Status, $item.Name))
+    $followUps = @($Results | Where-Object { $_.Action -and $_.Status -in @('WARN', 'FAIL', 'CHECK', 'SKIP') })
+    $number = 0
+    foreach ($item in $followUps) {
+        $number++
+        [void]$lines.Add(('{0}. [{1}] {2}' -f $number, $item.Status, $item.Name))
         [void]$lines.Add(('   ' + (($item.Action -replace '[\r\n]+', ' ').Trim())))
     }
     if ($RestartRequired) {
-        $actionNumber++
-        [void]$lines.Add(('{0}. [WARN] Restart Windows when you have saved your work to finish installing updates.' -f $actionNumber))
+        $number++
+        [void]$lines.Add(('{0}. Save your work and restart Windows to finish updates.' -f $number))
     }
-    if ($actionNumber -eq 0) {
-        [void]$lines.Add('No specific follow-up action recorded. Review any skipped or unverified checks below.')
-    }
+    if ($number -eq 0) { [void]$lines.Add('No specific follow-up action was recorded.') }
+    [void]$lines.Add('')
 
+    [void]$lines.Add('YOUR CHOICES')
+    [void]$lines.Add('------------')
+    if ($Choices.Count -gt 0) {
+        foreach ($choice in $Choices) { [void]$lines.Add((' - ' + $choice)) }
+    } else { [void]$lines.Add('No interactive choices were recorded.') }
     [void]$lines.Add('')
-    [void]$lines.Add('CHECK RESULTS')
-    [void]$lines.Add('-------------')
+
+    [void]$lines.Add('EACH MAINTENANCE STEP')
+    [void]$lines.Add('---------------------')
     foreach ($item in $Results) {
-        $shortSummary = ([string]$item.Summary -replace '[\r\n]+', ' ').Trim()
-        [void]$lines.Add(('[{0}] {1} - {2}' -f $item.Status, $item.Name, $shortSummary))
+        $summary = ([string]$item.Summary -replace '[\r\n]+', ' ').Trim()
+        $duration = if ($null -ne $item.DurationSeconds -and $item.DurationSeconds -ne '') {
+            (' (about {0} seconds from step start)' -f $item.DurationSeconds)
+        } else { '' }
+        [void]$lines.Add(('[{0}] {1}{2}' -f $item.Status, $item.Name, $duration))
+        [void]$lines.Add(('    ' + $summary))
     }
-    if ($Results.Count -eq 0) {
-        [void]$lines.Add('No maintenance results were recorded.')
-    }
+    if ($Results.Count -eq 0) { [void]$lines.Add('No maintenance results were recorded.') }
     [void]$lines.Add('')
-    [void]$lines.Add('TECHNICAL DETAILS')
-    [void]$lines.Add('-----------------')
-    if (-not [string]::IsNullOrWhiteSpace($TechnicalFile)) {
-        [void]$lines.Add(('Recorded diagnostic details: ' + $TechnicalFile))
-    } else {
-        [void]$lines.Add('No separate technical log was created.')
+
+    [void]$lines.Add('STATUS GUIDE')
+    [void]$lines.Add('------------')
+    [void]$lines.Add('PASS: reported success; WARN: needs attention; FAIL: did not finish successfully.')
+    [void]$lines.Add('CHECK: outcome could not be confirmed; SKIP: not run or interrupted.')
+    [void]$lines.Add('An interrupted Windows scan or repair may leave unfinished Windows servicing work.')
+    [void]$lines.Add('A successful scan does not mean every part of the computer is healthy.')
+    [void]$lines.Add('')
+
+    [void]$lines.Add('DETAILED ACTIVITY AND WINDOWS OUTPUT')
+    [void]$lines.Add('------------------------------------')
+    [void]$lines.Add('For troubleshooting: command messages and recorded activity from this run.')
+    [void]$lines.Add('Progress display updates are not repeated here; final outcomes and tool output are.')
+    if ($Details.Count -eq 0) { [void]$lines.Add('No additional activity was recorded.') }
+    foreach ($detail in $Details) {
+        if (-not [string]::IsNullOrWhiteSpace($detail)) { [void]$lines.Add($detail) }
     }
-    [void]$lines.Add('PASS = check passed  |  WARN = needs attention  |  FAIL = failed')
-    [void]$lines.Add('CHECK = result unconfirmed  |  SKIP = was not run')
-    [void]$lines.Add('A successful scan does not necessarily mean the entire computer is healthy.')
     return ($lines -join [Environment]::NewLine)
 }
 
-# Keep the quick summary and full log separate. Desktop is preferred.
+# Save one complete report on the Desktop, or fall back to Documents or TEMP.
 function Save-YaugerMaintenanceReport {
     param(
         [Parameter(Mandatory = $true)][string]$ReportText,
-        [Parameter(Mandatory = $true)][string]$TechnicalText,
         [Parameter(Mandatory = $true)][string]$Timestamp,
         [string[]]$Destinations = @(
             [Environment]::GetFolderPath('Desktop'),
@@ -269,14 +304,12 @@ function Save-YaugerMaintenanceReport {
     foreach ($folder in $Destinations) {
         if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
         $reportPath = Join-Path $folder ('YaugerAIO_Report_' + $Timestamp + '.txt')
-        $technicalPath = Join-Path $folder ('YaugerAIO_Technical_' + $Timestamp + '.txt')
         try {
             Set-Content -LiteralPath $reportPath -Value $ReportText -Encoding UTF8 -ErrorAction Stop
-            Set-Content -LiteralPath $technicalPath -Value $TechnicalText -Encoding UTF8 -ErrorAction Stop
-            return [PSCustomObject]@{ ReportPath = $reportPath; TechnicalPath = $technicalPath }
+            return $reportPath
         } catch {
             # A redirected Desktop or missing permissions can block a write; try the next folder.
-            continue
+            Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
         }
     }
     throw 'Unable to save the maintenance report to Desktop, Documents, or the temporary directory.'
