@@ -1,107 +1,130 @@
 # YaugerAIO
 
-YaugerAIO is a Windows cleanup and checkup tool I put together in PowerShell. It walks you through a few maintenance jobs, shows you what's going on, and leaves you with a report when it's finished.
+YaugerAIO is a Windows maintenance tool I wrote in PowerShell. It checks some common trouble spots, walks you through cleanup, runs Windows repair checks, and leaves you a report explaining what happened.
 
-You don't need to know PowerShell to use it. Just follow the prompts.
+You don't need to know PowerShell to use it. Open a terminal, enter the commands below, and follow the prompts.
 
-> **Heads up:** I'm still testing the updated version (1.5.1). The copy on PowerShell Gallery is older. The easy installation steps below are for **after** the update is published. If you're helping me test it now, skip to [Testing the new version](#testing-the-new-version).
+**Current release: 1.5.1** — [Get it from PowerShell Gallery](https://www.powershellgallery.com/packages/YaugerAIO/1.5.1).
 
-## Install it and run it
+## Install and run
 
-You don't have to open anything as Administrator. Windows will ask for permission when YaugerAIO actually starts.
+### Using PowerShell
 
-### If you opened PowerShell
-
-1. Open the Start menu, type **Windows PowerShell**, and open it normally.
-2. Paste these **two lines** and press Enter:
+1. Open the **Start** menu.
+2. Type **PowerShell** and open **Windows PowerShell**. You can open it normally — there's no need to right-click and choose *Run as administrator*.
+3. Enter these two commands, one after the other:
 
 ```powershell
 Install-Module YaugerAIO -Scope CurrentUser -ErrorAction Stop
 YaugerAIO
 ```
 
-**First line:** downloads and installs YaugerAIO for your Windows account. It doesn't run any cleanup.
+**The first command installs YaugerAIO.** It downloads the tool from PowerShell Gallery but does not run any maintenance.
 
-**Second line:** starts YaugerAIO. You'll get a Windows administrator permission prompt, followed by the guided maintenance window.
+**The second command starts YaugerAIO.** Windows will ask for administrator permission, then open the maintenance window and walk you through the checks.
 
-The installation command itself doesn't tell you what to type next. That's why both lines are here, ready to paste. PowerShell might ask you to approve the PowerShell Gallery or install a package provider. Read those prompts and agree if you want to proceed.
+PowerShell may ask whether you trust PowerShell Gallery or want to install a required package provider. Read the prompt and accept it if you want to continue.
 
-### If you opened Command Prompt (CMD)
+### Using Command Prompt (CMD)
 
-CMD doesn't understand PowerShell commands on its own. Paste this **single line** into CMD instead:
+If you opened **Command Prompt** instead, paste this one line:
 
 ```cmd
 powershell -NoProfile -Command "Install-Module YaugerAIO -Scope CurrentUser -ErrorAction Stop; YaugerAIO"
 ```
 
-It opens PowerShell behind the scenes, installs the module, then starts the same maintenance window. This works whether CMD is opened normally or as Administrator.
+CMD hands those commands to PowerShell. You still get the same administrator prompt and the same maintenance window.
 
-### Next time, you don't need to install it again
+### Next time you want to use it
 
-From **PowerShell**, just type:
+You only install YaugerAIO once. After that, start it from PowerShell with:
 
 ```powershell
 YaugerAIO
 ```
 
-From **CMD**, type:
+Or from CMD with:
 
 ```cmd
 powershell -NoProfile -Command "YaugerAIO"
 ```
 
-Windows will ask for administrator permission when necessary. Click **Yes** to continue; if you're signed in with a standard Windows account, you may need an administrator's password. A separate console will open so you can follow the prompts and read the results.
+If you've installed an older version, enter `Update-Module YaugerAIO` in PowerShell to get the latest published version.
 
-If you have an older YaugerAIO already installed, run `Update-Module YaugerAIO` in PowerShell after 1.5.1 is published.
+You can also use `Start-YaugerAIOWorkflow` if you've been using that command already. Both commands launch the same tool. There's no need to type `Import-Module` first in a normal PowerShell setup.
 
-You can also explicitly load the module with `Import-Module YaugerAIO` before running `YaugerAIO`, but you shouldn't have to. The longer command, `Start-YaugerAIOWorkflow`, remains available too.
+## Before you start
 
-## What does it actually do?
+**Save your work, close your open programs, and plug in a laptop before running this.**
 
-It checks your free drive space, CPU and memory use, graphics driver dates, and how long Windows has been running. It can clear temporary files, run Disk Cleanup, flush the DNS cache, and try to clear browser caches.
+YaugerAIO doesn't just look at your PC; it performs maintenance. It can remove temporary files, clear browser caches, and **install Windows software updates**. Updates can take a while and may require a restart.
 
-It also runs two Windows repair checks (DISM and SFC), then looks for and installs available Windows software updates. The DISM check only looks for damage; it doesn't fix it by itself. SFC can repair certain Windows files.
+Some cleanup is optional, and the tool asks before running it. It may also offer to close applications holding temporary files open. If you say yes, those applications can be closed without saving their work.
 
-**Before you start:** Save your work, close your browsers and other apps, and plug in your laptop. If you agree to let the tool close running apps for you, anything unsaved in those apps could be lost. Updates can take a while and may require a restart.
+Windows will ask for administrator approval when the tool starts. If your Windows account doesn't have administrator privileges, you'll need credentials from an administrator. You can't skip that Windows security requirement.
 
-## Where do I see the results?
+## What does it check and clean?
 
-When it finishes, the window tells you where it saved two files:
+- **Disk space:** Shows how much room is left on the Windows drive and offers Disk Cleanup.
+- **Temporary files:** Checks the Windows TEMP folder and asks whether you want to clear it.
+- **CPU and memory:** Takes a quick reading of current usage. These are snapshots, not long-term performance tests.
+- **Graphics drivers:** Shows detected graphics hardware and driver dates. An older driver date does not automatically mean an update is needed.
+- **Uptime:** Reports how long Windows has been running since its last restart.
+- **DNS cache:** Flushes Windows' local DNS resolver cache.
+- **Browser caches:** Tries to clear cached files from supported browsers. Some files may be in use or belong to other browser profiles.
+- **DISM:** Runs `DISM /CheckHealth` to look for component-store problems. This check **does not repair** them.
+- **SFC:** Runs `sfc /scannow` to check protected Windows system files and repair what Windows can.
+- **Windows Update:** Looks for applicable software updates, downloads them, and attempts installation. If the update service reports a failure or incomplete result, the report should flag that instead of claiming everything succeeded.
 
-- **YaugerAIO_Report_...txt** is the one to read first. It says what worked, what didn't, what was skipped, and what to try next.
-- **YaugerAIO_Technical_...txt** contains the longer messages and command output, in case you're troubleshooting something.
+The program takes you through these jobs in order. Some steps can take several minutes, especially SFC and Windows Update.
 
-It tries to save them on your Desktop. If it can't, it tries Documents and then the Windows temporary folder.
+## Where are my results?
 
-A warning in the report doesn't automatically mean your PC is broken. It means there's something worth checking.
+At the end of the run, YaugerAIO prints the locations of two text files:
 
-## Testing the new version
+- **`YaugerAIO_Report_<timestamp>.txt`** — Start here. It tells you what succeeded, what failed, what was skipped, and what still needs attention.
+- **`YaugerAIO_Technical_<timestamp>.txt`** — More detailed messages and command output, useful when something doesn't work.
 
-**This section is for testing the GitHub version before it goes on PowerShell Gallery.** It won't replace an older copy you've already installed.
+The tool tries to save both files on the Desktop. If it can't, it tries Documents and then the temporary folder. Read the file locations shown in the console so you know where they ended up.
 
-Open PowerShell on the Windows PC and run these commands one at a time:
+The report uses these labels:
 
-```powershell
-$zip = "$env:TEMP\YaugerAIO-test.zip"
-$folder = "$env:TEMP\YaugerAIO-test"
-Invoke-WebRequest 'https://github.com/Graytools/YaugerAIO/archive/refs/heads/fix/psgallery-1.5.1.zip' -OutFile $zip
-Expand-Archive $zip -DestinationPath $folder -Force
-Import-Module "$folder\YaugerAIO-fix-psgallery-1.5.1\YaugerAIO.psd1" -Force
-YaugerAIO
-```
+| Result | Meaning |
+| --- | --- |
+| PASS | The check reported success. |
+| WARN | Something needs attention or finished only partly. |
+| FAIL | The operation failed or could not finish. |
+| SKIP | The operation wasn't run. |
+| CHECK | The tool couldn't confirm the result; review the details. |
 
-The download and import steps just prepare the tool. The last command starts the actual maintenance run and triggers the administrator approval prompt. Only run downloaded scripts you trust.
+A clean report is useful, but it isn't a guarantee that every part of a computer is healthy.
 
-If Windows blocks the downloaded scripts, check their origin before deciding whether to unblock them.
+## If something doesn't work
+
+**`YaugerAIO` isn't recognized:** Make sure the installation finished without errors. Close and reopen PowerShell, then try again. You can check whether it installed with `Get-Module -ListAvailable YaugerAIO`.
+
+**You don't see the administrator prompt:** Make sure you ran `YaugerAIO`, not just `Install-Module`. If Windows needs another administrator's password, somebody with that access will have to approve the request.
+
+**Something fails during maintenance:** Keep the PowerShell window open, note the message, and check the technical log. Don't keep rerunning a failed Windows repair command without checking why it failed.
+
+**Can't find your report:** Look at the two file paths printed at the end of the run. If Windows elevation used a different administrator account, the files may be saved under that account's Desktop or Documents.
+
+For bugs or feature requests, open an [issue on GitHub](https://github.com/Graytools/YaugerAIO/issues). Please remove personal information from logs before attaching them.
 
 ## For anyone working on the code
 
-The tests are in the `Tests` folder. They check the module, reporting, and individual maintenance functions without running a real cleanup or Windows Update.
+The module is `YaugerAIO.psm1`. It exports `YaugerAIO` and `Start-YaugerAIOWorkflow`. Importing the module does not start maintenance.
+
+The guided maintenance script is `YaugerAIO.ps1`. That file runs the workflow when launched, so **don't dot-source it just to inspect its functions**.
+
+The `Tests` folder has Pester tests for module loading, temporary-file cleanup, DISM/SFC result handling, report generation, and launcher checks:
 
 ```powershell
 Invoke-Pester -Path ./Tests -Output Detailed
 ```
 
-The full maintenance run still needs to be checked on a Windows PC before release.
+The tests are designed not to run an actual Windows cleanup, SFC scan, or Windows Update installation. They can't replace an end-to-end test on a real Windows machine.
 
-The code lives at [Graytools/YaugerAIO](https://github.com/Graytools/YaugerAIO). Bug reports and pull requests are welcome. License details are in [LICENSE](LICENSE).
+Requirements: Windows 10 or later, Windows PowerShell 5.1 or PowerShell 7, and administrator approval for maintenance.
+
+The project is licensed under the MIT License. See [LICENSE](LICENSE) for the details.
