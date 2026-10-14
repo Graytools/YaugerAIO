@@ -132,19 +132,140 @@ $initialFreeSpace = (Get-PSDrive -Name $selectedDrive.Substring(0,1)).Free
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
 
-$timestamp = Get-Date -Format "yyyyMMdd"
-$desktopPath = [Environment]::GetFolderPath("Desktop")
-$logFile = Join-Path $desktopPath "YAIO_$timestamp.log"
-$script:log = @()
-$script:foundAndFixedCorruption = $false
 $script:StartTime = Get-Date
+$timestamp = $script:StartTime.ToString("yyyyMMdd_HHmmss_fff")
+$script:log = @()
+$script:maintenanceResults = @()
+$script:foundAndFixedCorruption = $false
 $script:runDiskCleanup = $false
 $script:needsRestart = $false
 
 function Log {
     param([string]$message, [string]$color = "Cyan")
-    $script:log += $message + "`n"
+    $script:log += $message
     Write-Host $message -ForegroundColor $color
+}
+
+# Structured results are distinct from console messages and diagnostic output.
+function Add-MaintenanceResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [ValidateSet('PASS', 'WARN', 'FAIL', 'SKIP', 'CHECK')][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Summary,
+        [string]$Action = ''
+    )
+    $script:maintenanceResults += [PSCustomObject]@{
+        Name    = $Name
+        Status  = $Status
+        Summary = $Summary
+        Action  = $Action
+    }
+}
+
+# Pure formatter: easy to test without executing any Windows maintenance.
+function Format-YaugerMaintenanceReport {
+    param(
+        [object[]]$Results = @(),
+        [datetime]$StartedAt,
+        [datetime]$FinishedAt,
+        [string]$ComputerName = 'Unknown',
+        [string]$Drive = 'Unknown',
+        [string]$SpaceFreed = 'Not measured',
+        [bool]$RestartRequired = $false,
+        [string]$TechnicalFile = ''
+    )
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    [void]$lines.Add('YAUGERAIO | WINDOWS MAINTENANCE REPORT')
+    [void]$lines.Add('=====================================')
+    [void]$lines.Add(('Computer: ' + $ComputerName))
+    [void]$lines.Add(('Started:  ' + $StartedAt.ToString('yyyy-MM-dd HH:mm:ss')))
+    [void]$lines.Add(('Finished: ' + $FinishedAt.ToString('yyyy-MM-dd HH:mm:ss')))
+    [void]$lines.Add(('Duration: ' + ([math]::Round(($FinishedAt - $StartedAt).TotalMinutes, 1)) + ' minutes'))
+    [void]$lines.Add(('System drive: ' + $Drive))
+    [void]$lines.Add(('Estimated disk space reclaimed: ' + $SpaceFreed))
+    [void]$lines.Add(('Restart required by Windows Update: ' + $(if ($RestartRequired) { 'YES' } else { 'Not reported' })))
+    [void]$lines.Add('')
+
+    $passed = @($Results | Where-Object { $_.Status -eq 'PASS' }).Count
+    $warnings = @($Results | Where-Object { $_.Status -eq 'WARN' }).Count
+    $failures = @($Results | Where-Object { $_.Status -eq 'FAIL' }).Count
+    $checks = @($Results | Where-Object { $_.Status -eq 'CHECK' }).Count
+    $skipped = @($Results | Where-Object { $_.Status -eq 'SKIP' }).Count
+
+    [void]$lines.Add('AT A GLANCE')
+    [void]$lines.Add('-----------')
+    [void]$lines.Add(("{0} passed | {1} warnings | {2} failed | {3} unverified | {4} skipped" -f $passed,$warnings,$failures,$checks,$skipped))
+    [void]$lines.Add('')
+    [void]$lines.Add('WHAT TO DO NEXT')
+    [void]$lines.Add('---------------')
+
+    $actionItems = @($Results | Where-Object {
+        $_.Status -in @('FAIL', 'WARN', 'CHECK') -and -not [string]::IsNullOrWhiteSpace($_.Action)
+    })
+    $actionNumber = 0
+    foreach ($item in $actionItems) {
+        $actionNumber++
+        [void]$lines.Add(('{0}. [{1}] {2}' -f $actionNumber, $item.Status, $item.Name))
+        [void]$lines.Add(('   ' + (($item.Action -replace '[\r\n]+', ' ').Trim())))
+    }
+    if ($RestartRequired) {
+        $actionNumber++
+        [void]$lines.Add(('{0}. [WARN] Restart Windows when you have saved your work to finish installing updates.' -f $actionNumber))
+    }
+    if ($actionNumber -eq 0) {
+        [void]$lines.Add('No specific follow-up action recorded. Review any skipped or unverified checks below.')
+    }
+
+    [void]$lines.Add('')
+    [void]$lines.Add('CHECK RESULTS')
+    [void]$lines.Add('-------------')
+    foreach ($item in $Results) {
+        $shortSummary = ([string]$item.Summary -replace '[\r\n]+', ' ').Trim()
+        [void]$lines.Add(('[{0}] {1} - {2}' -f $item.Status, $item.Name, $shortSummary))
+    }
+    if ($Results.Count -eq 0) {
+        [void]$lines.Add('No maintenance results were recorded.')
+    }
+    [void]$lines.Add('')
+    [void]$lines.Add('TECHNICAL DETAILS')
+    [void]$lines.Add('-----------------')
+    if (-not [string]::IsNullOrWhiteSpace($TechnicalFile)) {
+        [void]$lines.Add(('Full diagnostic output: ' + $TechnicalFile))
+    } else {
+        [void]$lines.Add('No separate technical log was created.')
+    }
+    [void]$lines.Add('PASS means the reported check succeeded. CHECK means completion could not be verified.')
+    [void]$lines.Add('A successful scan does not necessarily mean the entire computer is healthy.')
+    return ($lines -join [Environment]::NewLine)
+}
+
+# Write a readable report and optional full diagnostic log side by side.
+# Try Desktop first, then Documents, then the temporary directory if necessary.
+function Save-YaugerMaintenanceReport {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportText,
+        [Parameter(Mandatory = $true)][string]$TechnicalText,
+        [Parameter(Mandatory = $true)][string]$Timestamp,
+        [string[]]$Destinations = @(
+            [Environment]::GetFolderPath('Desktop'),
+            [Environment]::GetFolderPath('MyDocuments'),
+            [System.IO.Path]::GetTempPath()
+        )
+    )
+    foreach ($folder in $Destinations) {
+        if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
+        $reportPath = Join-Path $folder ('YaugerAIO_Report_' + $Timestamp + '.txt')
+        $technicalPath = Join-Path $folder ('YaugerAIO_Technical_' + $Timestamp + '.txt')
+        try {
+            Set-Content -LiteralPath $reportPath -Value $ReportText -Encoding UTF8 -ErrorAction Stop
+            Set-Content -LiteralPath $technicalPath -Value $TechnicalText -Encoding UTF8 -ErrorAction Stop
+            return [PSCustomObject]@{ ReportPath = $reportPath; TechnicalPath = $technicalPath }
+        } catch {
+            # Try the next destination; explain the problem if none can be written.
+            continue
+        }
+    }
+    throw 'Unable to save the maintenance report to Desktop, Documents, or the temporary directory.'
 }
 
 function Get-CBSSummary {
