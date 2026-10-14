@@ -534,6 +534,138 @@ function Get-DISMCheckHealthStatus {
     return 'Unknown'
 }
 
+# Run native servicing tools separately so the console stays responsive.
+# Windows controls the real progress. We only show percentages reported by the tool.
+function Get-YaugerNativePercent {
+    param([string]$Output)
+    if ([string]::IsNullOrWhiteSpace($Output)) { return '' }
+    $found = [regex]::Matches($Output, '(?<!\d)(?<value>100(?:[.,]0+)?|\d{1,2}(?:[.,]\d+)?)\s*%')
+    if ($found.Count -eq 0) { return '' }
+    return ($found[$found.Count - 1].Groups['value'].Value.Replace(',', '.') + '%')
+}
+
+function Read-YaugerSharedText {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = New-Object System.IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = New-Object System.IO.StreamReader($stream, [Text.Encoding]::Default, $true)
+        return $reader.ReadToEnd()
+    } catch {
+        return ''
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Test-YaugerSpacePressed {
+    try {
+        if (-not [Console]::IsInputRedirected -and [Console]::KeyAvailable) {
+            return ([Console]::ReadKey($true).Key -eq [ConsoleKey]::Spacebar)
+        }
+    } catch { }
+    return $false
+}
+
+# Killing DISM/SFC can leave unfinished servicing work. Never claim a skip was a successful scan.
+function Stop-YaugerNativeProcess {
+    param([System.Diagnostics.Process]$Process)
+    try {
+        if (-not $Process.HasExited) {
+            & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+        }
+    } catch { }
+    try {
+        $Process.Refresh()
+        if (-not $Process.HasExited) { Stop-Process -Id $Process.Id -Force -ErrorAction Stop }
+        [void]$Process.WaitForExit(3000)
+        $Process.Refresh()
+        return $Process.HasExited
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-YaugerNativeTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$NextStep,
+        [scriptblock]$SkipRequested = { Test-YaugerSpacePressed }
+    )
+    $outFile = Join-Path ([IO.Path]::GetTempPath()) ('YaugerAIO_' + [guid]::NewGuid().ToString('N') + '.out')
+    $errFile = Join-Path ([IO.Path]::GetTempPath()) ('YaugerAIO_' + [guid]::NewGuid().ToString('N') + '.err')
+    $startedAt = Get-Date
+    $process = $null
+    $state = 'Failed'
+    $exitCode = $null
+    $output = ''
+    $detail = ''
+    $stopConfirmed = $true
+    Write-Host "$Label can sometimes pause while Windows works. The percentage may not change for a while." -ForegroundColor Yellow
+    Write-Host "Press SPACE to stop this task and continue to $NextStep. Stopping a repair may leave work unfinished." -ForegroundColor Yellow
+    try {
+        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        $state = 'Completed'
+        $lastDisplay = ''
+        do {
+            $process.Refresh()
+            if ($process.HasExited) { break }
+            if (& $SkipRequested) {
+                $state = 'Skipped'
+                Write-Host ""
+                Write-Host "Stopping $Label. Windows servicing may need time to settle..." -ForegroundColor Yellow
+                $stopConfirmed = Stop-YaugerNativeProcess -Process $process
+                if (-not $stopConfirmed) { $state = 'StopUnconfirmed' }
+                break
+            }
+            $captured = Read-YaugerSharedText -Path $outFile
+            $percent = Get-YaugerNativePercent -Output $captured
+            $elapsedText = ('{0:mm\:ss}' -f ((Get-Date) - $startedAt))
+            $progress = if ($percent) { "reported $percent" } else { 'running' }
+            $line = "$Label - $progress | $elapsedText | SPACE: skip to $NextStep"
+            if ($line -ne $lastDisplay) {
+                Write-Host ("`r{0,-100}" -f $line) -NoNewline -ForegroundColor Cyan
+                $lastDisplay = $line
+            }
+            Start-Sleep -Milliseconds 400
+        } while ($true)
+        Write-Host ""
+        if ($state -eq 'Completed') {
+            $process.Refresh()
+            $exitCode = $process.ExitCode
+        }
+        $output = Read-YaugerSharedText -Path $outFile
+        $detail = Read-YaugerSharedText -Path $errFile
+    } catch {
+        $state = 'Failed'
+        $detail += "YaugerAIO could not run or monitor ${Label}: $_"
+        if ($null -ne $process) { [void](Stop-YaugerNativeProcess -Process $process) }
+    } finally {
+        foreach ($file in @($outFile, $errFile)) {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $process) { $process.Dispose() }
+    }
+    $elapsed = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
+    $script:log += "$Label | outcome: $state | elapsed: $elapsed seconds | exit code: $exitCode"
+    if ($state -in @('Skipped', 'StopUnconfirmed')) {
+        $script:log += "$Label | Spacebar skip requested; process stopped: $stopConfirmed. Independent Windows servicing may continue."
+    }
+    if ($output) { $script:log += "$Label | captured command output:" + [Environment]::NewLine + $output }
+    if ($detail) { $script:log += "$Label | additional command output:" + [Environment]::NewLine + $detail }
+    return [PSCustomObject]@{
+        State = $state
+        ExitCode = $exitCode
+        Output = ($output + [Environment]::NewLine + $detail)
+        ElapsedSeconds = $elapsed
+    }
+}
+
 # The initial check is quick. Ask before starting the potentially lengthy repair.
 function Run-DISMCheckHealth {
     Write-Host "Checking Windows repair files (DISM /CheckHealth)..." -ForegroundColor Cyan
