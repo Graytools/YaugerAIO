@@ -1,6 +1,4 @@
-# Test human-readable report creation only. No maintenance executable runs.
-# The reporting functions are loaded individually from the script AST,
-# because dot-sourcing YaugerAIO.ps1 would execute the maintenance workflow.
+# Load just the report functions. Running the main script here would start maintenance.
 
 BeforeAll {
     $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'YaugerAIO.ps1'
