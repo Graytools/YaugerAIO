@@ -3,6 +3,7 @@ name: YaugerAIO Windows smoke tests
 on:
   push:
     branches:
+      - main
       - fix/psgallery-1.5.1
       - feature/dism-repair-1.5.2
   pull_request:
