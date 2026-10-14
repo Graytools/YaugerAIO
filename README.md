@@ -4,9 +4,7 @@ YaugerAIO is a Windows maintenance tool I wrote in PowerShell. It checks some co
 
 You don't need to know PowerShell to use it. Open a terminal, enter the commands below, and follow the prompts.
 
-**PowerShell Gallery version: 1.5.1** — [Install from PowerShell Gallery](https://www.powershellgallery.com/packages/YaugerAIO/1.5.1).
-
-**GitHub source version: 1.5.2** — Adds an optional Windows repair step and clearer reports. The 1.5.2 changes are in GitHub source only until a separate Gallery release is published. The installation instructions below still install Gallery version 1.5.1.
+**Latest release: 1.5.2** — [Get it from PowerShell Gallery](https://www.powershellgallery.com/packages/YaugerAIO/1.5.2).
 
 ## Install and run
 
@@ -74,7 +72,7 @@ Windows will ask for administrator approval when the tool starts. If your Window
 - **Uptime:** Reports how long Windows has been running since its last restart.
 - **DNS cache:** Flushes Windows' local DNS resolver cache.
 - **Browser caches:** Tries to clear cached files from supported browsers. Some files may be in use or belong to other browser profiles.
-- **DISM:** Checks Windows repair files for damage. In the 1.5.2 source, if DISM finds repairable damage, YaugerAIO asks before running `DISM /RestoreHealth`, then checks the result again. The published 1.5.1 package only checks for damage.
+- **DISM:** Checks Windows repair files for damage. If damage is repairable, YaugerAIO asks whether to run `DISM /RestoreHealth`, then checks whether Windows reports the problem fixed. Repairs are optional and may take a while.
 - **SFC:** Runs `sfc /scannow` to check protected Windows system files and repair what Windows can.
 - **Windows Update:** Looks for applicable software updates, downloads them, and attempts installation. If the update service reports a failure or incomplete result, the report should flag that instead of claiming everything succeeded.
 
