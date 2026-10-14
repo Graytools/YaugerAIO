@@ -233,11 +233,12 @@ function Format-YaugerMaintenanceReport {
     [void]$lines.Add('TECHNICAL DETAILS')
     [void]$lines.Add('-----------------')
     if (-not [string]::IsNullOrWhiteSpace($TechnicalFile)) {
-        [void]$lines.Add(('Full diagnostic output: ' + $TechnicalFile))
+        [void]$lines.Add(('Recorded diagnostic details: ' + $TechnicalFile))
     } else {
         [void]$lines.Add('No separate technical log was created.')
     }
-    [void]$lines.Add('PASS means the reported check succeeded. CHECK means completion could not be verified.')
+    [void]$lines.Add('PASS = check passed  |  WARN = needs attention  |  FAIL = failed')
+    [void]$lines.Add('CHECK = result unconfirmed  |  SKIP = was not run')
     [void]$lines.Add('A successful scan does not necessarily mean the entire computer is healthy.')
     return ($lines -join [Environment]::NewLine)
 }
@@ -681,23 +682,23 @@ function Clear-BrowserCaches {
         $chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Cache"
         if (Test-Path $chromePath) {
             Remove-Item "$chromePath\*" -Recurse -Force -ErrorAction SilentlyContinue
-            Log "✔ Chrome cache cleared." "Cyan"
+            Log "Attempted Chrome default-profile cache cleanup; locked files may remain." "Cyan"
         } else {
-            Log "✔ User doesn't have Chrome Browser." "Cyan"
+            Log "Chrome default-profile cache folder not found; other profiles were not checked." "Cyan"
         }
         $edgePath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Cache"
         if (Test-Path $edgePath) {
             Remove-Item "$edgePath\*" -Recurse -Force -ErrorAction SilentlyContinue
-            Log "✔ Edge cache cleared." "Cyan"
+            Log "Attempted Edge default-profile cache cleanup; locked files may remain." "Cyan"
         } else {
-            Log "✔ User doesn't have Edge Browser." "Cyan"
+            Log "Edge default-profile cache folder not found; other profiles were not checked." "Cyan"
         }
         $bravePath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Cache"
         if (Test-Path $bravePath) {
             Remove-Item "$bravePath\*" -Recurse -Force -ErrorAction SilentlyContinue
-            Log "✔ Brave cache cleared." "Cyan"
+            Log "Attempted Brave default-profile cache cleanup; locked files may remain." "Cyan"
         } else {
-            Log "✔ User doesn't have Brave Browser." "Cyan"
+            Log "Brave default-profile cache folder not found; other profiles were not checked." "Cyan"
         }
         if ((Test-Path "$env:LOCALAPPDATA\Opera Software") -or (Test-Path "$env:APPDATA\Opera Software")) {
             $operaStableLocal   = "$env:LOCALAPPDATA\Opera Software\Opera Stable\Cache"
@@ -708,9 +709,9 @@ function Clear-BrowserCaches {
             $operaGXRoaming = "$env:APPDATA\Opera Software\Opera GX\Cache"
             if (Test-Path $operaGXLocal)   { Remove-Item "$operaGXLocal\*" -Recurse -Force -ErrorAction SilentlyContinue }
             if (Test-Path $operaGXRoaming) { Remove-Item "$operaGXRoaming\*" -Recurse -Force -ErrorAction SilentlyContinue }
-            Log "✔ Opera cache cleared." "Cyan"
+            Log "Attempted Opera cache cleanup; some folders or locked files may have been skipped." "Cyan"
         } else {
-            Log "✔ User doesn't have Opera Browser." "Cyan"
+            Log "Opera cache folders not found in the checked profile locations." "Cyan"
         }
         if (Test-Path "$env:APPDATA\Mozilla\Firefox") {
             $firefoxProfilesPath = "$env:APPDATA\Mozilla\Firefox\Profiles"
@@ -723,11 +724,11 @@ function Clear-BrowserCaches {
                     if (Test-Path $cachePath)  { Remove-Item "$cachePath\*" -Recurse -Force -ErrorAction SilentlyContinue }
                 }
             }
-            Log "✔ Firefox cache cleared." "Cyan"
+            Log "Attempted Firefox profile cache cleanup; some cache folders or locked files may have been skipped." "Cyan"
         } else {
-            Log "✔ User doesn't have Firefox Browser." "Cyan"
+            Log "Firefox profile cache folders not found in the checked location." "Cyan"
         }
-        Add-MaintenanceResult -Name 'Browser caches' -Status CHECK -Summary 'Cache deletion was attempted for supported browser profiles; completion is not verified.' -Action 'Close browsers and rerun if browser storage remains unusually high.'
+        Add-MaintenanceResult -Name 'Browser caches' -Status CHECK -Summary 'Tried to clear selected browser caches, but some files and profiles may not have been checked.' -Action 'Close browsers before running YaugerAIO again if you still need to clear their caches.'
     } catch {
         Add-MaintenanceResult -Name 'Browser caches' -Status FAIL -Summary 'Browser cache cleanup encountered an error.' -Action 'Close running browsers, then retry; see the technical log.'
         Log "Failed to clear browser caches: $_" "Red"
@@ -1036,7 +1037,7 @@ try {
     $savedFiles = Save-YaugerMaintenanceReport -ReportText $reportText -TechnicalText ($technicalText -join [Environment]::NewLine) -Timestamp $timestamp
     Write-Host ""
     Write-Host "Readable maintenance report: $($savedFiles.ReportPath)" -ForegroundColor Green
-    Write-Host "Full technical details:       $($savedFiles.TechnicalPath)" -ForegroundColor Cyan
+    Write-Host "Recorded technical details:   $($savedFiles.TechnicalPath)" -ForegroundColor Cyan
 } catch {
     Write-Host "Unable to save maintenance report: $_" -ForegroundColor Red
 }
