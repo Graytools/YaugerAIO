@@ -457,11 +457,16 @@ function Run-CleanMgr {
 function Get-WindowsTempSize {
     try {
         $tempPath = $env:TEMP
-        $files = Get-ChildItem -Path $tempPath -Recurse -ErrorAction SilentlyContinue
+        if ([string]::IsNullOrWhiteSpace($tempPath) -or -not (Test-Path -LiteralPath $tempPath -PathType Container)) {
+            Log "Unable to calculate Windows Temp size: TEMP directory is unavailable." "Yellow"
+            return 0
+        }
+
+        # -Force includes hidden files; -File excludes directories from the total.
+        $files = Get-ChildItem -LiteralPath $tempPath -Recurse -File -Force -ErrorAction SilentlyContinue
         $sizeBytes = ($files | Measure-Object -Property Length -Sum).Sum
         if (-not $sizeBytes) { $sizeBytes = 0 }
-        $sizeMB = [math]::Round($sizeBytes / 1MB, 2)
-        return $sizeMB
+        return [math]::Round($sizeBytes / 1MB, 2)
     } catch {
         Log "Failed to calculate Windows Temp size: $_" "Red"
         return 0
