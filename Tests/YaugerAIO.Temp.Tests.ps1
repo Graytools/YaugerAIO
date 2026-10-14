@@ -1,6 +1,6 @@
-# Functional tests for one original YaugerAIO maintenance function.
+# Functional tests for original YaugerAIO temp-directory maintenance functions.
 # SAFETY: Never dot-source YaugerAIO.ps1: its top-level code runs maintenance.
-# Load only the Clear-WindowsTemp function from the syntax tree.
+# Load only the temp functions from the syntax tree.
 # Real removals in this file are restricted to Pester's disposable TestDrive.
 
 BeforeAll {
@@ -10,16 +10,18 @@ BeforeAll {
     $ast = [System.Management.Automation.Language.Parser]::ParseFile(
         $scriptPath, [ref]$tokens, [ref]$parseErrors
     )
-    if ($parseErrors) { throw 'Cannot test temp cleanup while the original script has syntax errors.' }
+    if ($parseErrors) { throw 'Cannot test temp functions while the original script has syntax errors.' }
 
-    $functionAst = $ast.Find({
-        param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-        $node.Name -eq 'Clear-WindowsTemp'
-    }, $true)
-    if ($null -eq $functionAst) { throw 'Clear-WindowsTemp is missing.' }
+    foreach ($functionName in @('Clear-WindowsTemp', 'Get-WindowsTempSize')) {
+        $functionAst = $ast.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq $functionName
+        }, $true)
+        if ($null -eq $functionAst) { throw "$functionName is missing." }
 
-    . ([scriptblock]::Create($functionAst.Extent.Text))
+        . ([scriptblock]::Create($functionAst.Extent.Text))
+    }
 
     # Isolated logging stub; do not write a real desktop maintenance log.
     function Log {
@@ -79,5 +81,26 @@ Describe 'Clear-WindowsTemp functional safety tests' {
         Clear-WindowsTemp
 
         Should -Invoke Remove-Item -Exactly -Times 0
+    }
+
+    It 'accurately counts nested and hidden test files in megabytes' {
+        $nested = Join-Path $env:TEMP 'nested'
+        New-Item -ItemType Directory -Path $nested | Out-Null
+
+        $normalPath = Join-Path $nested 'normal.bin'
+        $hiddenPath = Join-Path $env:TEMP '.hidden.bin'
+        [System.IO.File]::WriteAllBytes($normalPath, ([byte[]]::new(1MB)))
+        [System.IO.File]::WriteAllBytes($hiddenPath, ([byte[]]::new(512KB)))
+        if ($env:OS -eq 'Windows_NT') {
+            $hiddenItem = Get-Item -LiteralPath $hiddenPath -Force
+            $hiddenItem.Attributes = $hiddenItem.Attributes -bor [System.IO.FileAttributes]::Hidden
+        }
+
+        Get-WindowsTempSize | Should -Be 1.5
+    }
+
+    It 'returns zero when the TEMP directory is missing' {
+        $env:TEMP = Join-Path $TestDrive 'nonexistent-temp'
+        Get-WindowsTempSize | Should -Be 0
     }
 }
