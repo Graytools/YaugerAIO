@@ -11,8 +11,8 @@
 Initial release to PowerShell Gallery.
 #>
 
-# --- Request administrator approval before touching console settings ---
-# This also supports users who launch the script from an unelevated CMD or PowerShell window.
+# Ask Windows for admin rights before doing anything with the console.
+# This handles launches from a regular CMD or PowerShell window.
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $psCmd = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
     $scriptPath = $PSCommandPath
@@ -21,7 +21,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
         return
     }
 
-    # Quoting preserves paths containing spaces; -NoExit keeps the results visible.
+    # Leave the new console open so the user can read the results.
     $quotedScriptPath = '"' + $scriptPath + '"'
     try {
         Start-Process -FilePath $psCmd -Verb RunAs -ArgumentList @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $quotedScriptPath) -ErrorAction Stop
@@ -31,22 +31,20 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     return
 }
 
-# Console resizing is cosmetic, and can fail in Windows Terminal or small windows.
-# Do not stop system maintenance if the console cannot be resized.
+# Windows Terminal and some console hosts won't honor resize requests.
 try {
     $desiredWidth = 130
     $desiredHeight = 50
     $host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size($desiredWidth, $desiredHeight)
     $host.UI.RawUI.WindowSize = New-Object Management.Automation.Host.Size($desiredWidth, $desiredHeight)
 } catch {
-    # Keep the existing console size if resizing is unsupported.
 }
 
-# Set the default runspace for asynchronous handlers.
+# Keep the current runspace available to the console helpers.
 $global:myRunspace = [runspace]::DefaultRunspace
 [runspace]::DefaultRunspace = $global:myRunspace
 
-# Define Next Steps for the overall workflow.
+# Next-step labels used by the original servicing flow.
 $script:NextStepFor = @{
     'DISM' = 'SFC Scan'
     'SFC'  = 'Windows Updates'
@@ -54,11 +52,11 @@ $script:NextStepFor = @{
 
 $DebugDism = $false  # Set to $true for extra DISM debug output
 
-# Global variables for scan summaries.
+# Scan notes shared across the workflow.
 $global:DISMSummary = ""
 $global:SFCSummary  = ""
 
-# --- Function to Bring Console to Foreground ---
+# Bring the new console to the front when possible.
 function Focus-Console {
     Add-Type @"
 using System;
@@ -72,7 +70,7 @@ public class Win32 {
     [Win32]::SetForegroundWindow($hwnd) | Out-Null
 }
 
-# --- Function to Get Processes That May Lock Temp Files ---
+# Running applications can hold temp files open.
 function Get-TempLockingProcesses {
     $commonAppsMapping = @{
          "chrome"              = "Google Chrome"
@@ -122,7 +120,7 @@ function Get-TempLockingProcesses {
     return $result | Sort-Object FriendlyName -Unique
 }
 
-# --- Determine Primary Drive ---
+# Prefer the Windows system drive when checking free space.
 $selectedDrive = $env:SystemDrive
 if (-not $selectedDrive -or -not ($selectedDrive -match "^[A-Z]:$")) {
     Write-Host "SystemDrive environment variable is not set or invalid. Determining primary drive..." -ForegroundColor Yellow
@@ -132,7 +130,7 @@ if (-not $selectedDrive -or -not ($selectedDrive -match "^[A-Z]:$")) {
     Write-Host "System drive: ${selectedDrive}" -ForegroundColor White
 }
 
-# Store initial free space for accurate total space freed calculation.
+# Compare free space before and after. Other disk activity can affect this estimate.
 $initialFreeSpace = (Get-PSDrive -Name $selectedDrive.Substring(0,1)).Free
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
@@ -151,7 +149,7 @@ function Log {
     Write-Host $message -ForegroundColor $color
 }
 
-# Structured results are distinct from console messages and diagnostic output.
+# Store short outcomes separately from the detailed console messages.
 function Add-MaintenanceResult {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -167,7 +165,7 @@ function Add-MaintenanceResult {
     }
 }
 
-# Pure formatter: easy to test without executing any Windows maintenance.
+# Build the report from results collected during the run.
 function Format-YaugerMaintenanceReport {
     param(
         [object[]]$Results = @(),
@@ -244,8 +242,7 @@ function Format-YaugerMaintenanceReport {
     return ($lines -join [Environment]::NewLine)
 }
 
-# Write a readable report and optional full diagnostic log side by side.
-# Try Desktop first, then Documents, then the temporary directory if necessary.
+# Keep the quick summary and full log separate. Desktop is preferred.
 function Save-YaugerMaintenanceReport {
     param(
         [Parameter(Mandatory = $true)][string]$ReportText,
@@ -266,7 +263,7 @@ function Save-YaugerMaintenanceReport {
             Set-Content -LiteralPath $technicalPath -Value $TechnicalText -Encoding UTF8 -ErrorAction Stop
             return [PSCustomObject]@{ ReportPath = $reportPath; TechnicalPath = $technicalPath }
         } catch {
-            # Try the next destination; explain the problem if none can be written.
+            # A redirected Desktop or missing permissions can block a write; try the next folder.
             continue
         }
     }
@@ -300,7 +297,7 @@ function Show-Banner {
     Write-Host $asciiArt
 }
 
-# --- System Check Functions ---
+# System checks
 function Check-DiskSpace {
     try {
         $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='${selectedDrive}'"
@@ -512,10 +509,7 @@ function Install-WindowsUpdates {
     }
 }
 
-# --------------------------------------------------------------
-# DISM /CheckHealth only DETECTS component store problems.
-# Keep result classification separate so it can be tested safely.
-# --------------------------------------------------------------
+# /CheckHealth is diagnostic only. It won't repair the component store.
 function Get-DISMCheckHealthStatus {
     param(
         [string]$Output,
@@ -565,10 +559,7 @@ function Run-DISMCheckHealth {
     Write-Host ""
 }
 
-# -------------------------------
-# SFC /scannow can repair files. Interpret known result messages conservatively;
-# unknown or localized output must not be reported as a successful repair.
-# -------------------------------
+# SFC messages vary by Windows version and language. Unknown output isn't a pass.
 function Get-SFCScanStatus {
     param(
         [string]$Output,
@@ -585,7 +576,7 @@ function Get-SFCScanStatus {
 function Run-SFCScan {
     Write-Host "Executing SFC Scan..." -ForegroundColor Cyan
     try {
-        # Tee-Object keeps SFC's native output visible while capturing it for the desktop log.
+        # Show SFC's output as it runs, and keep a copy for the technical log.
         $sfcLines = @()
         & sfc.exe /scannow 2>&1 | Tee-Object -Variable sfcLines
         $exitCode = $LASTEXITCODE
@@ -622,9 +613,7 @@ function Run-SFCScan {
 }
 
 
-# --------------------------------------------------------------
-# Functions for clearing browser caches, disk cleanup, and temporary files.
-# --------------------------------------------------------------
+# Cleanup tasks
 function Clear-BrowserCaches {
     try {
         $chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Cache"
@@ -718,7 +707,7 @@ function Get-WindowsTempSize {
             return 0
         }
 
-        # -Force includes hidden files; -File excludes directories from the total.
+        # Count hidden files too, but don't count directory entries as files.
         $files = Get-ChildItem -LiteralPath $tempPath -Recurse -File -Force -ErrorAction SilentlyContinue
         $sizeBytes = ($files | Measure-Object -Property Length -Sum).Sum
         if (-not $sizeBytes) { $sizeBytes = 0 }
@@ -776,7 +765,7 @@ function Clear-WindowsTemp {
     }
 }
 
-# New function to wrap text without breaking words.
+# Wrap longer console messages without splitting words.
 function Wrap-Text {
     param(
         [Parameter(Mandatory=$true)]
@@ -800,9 +789,7 @@ function Wrap-Text {
     return $result
 }
 
-# -------------------------------
-# Main Section
-# -------------------------------
+# Guided maintenance run
 Show-Banner
 
 Write-Host "During this session, we will:" -ForegroundColor White
@@ -829,7 +816,7 @@ Write-Host "Please press Enter to begin." -ForegroundColor Yellow
 [void][System.Console]::ReadKey($true)
 Write-Host ""
 
-# --- 1. Disk Cleanup (Optional) ---
+# Disk Cleanup (optional)
 Write-Host "Would you like to run Disk Cleanup? (Y/N)" -ForegroundColor Yellow
 $key = [Console]::ReadKey($true)
 if ($key.KeyChar.ToString().ToUpper() -eq "Y") {
@@ -842,7 +829,7 @@ if ($key.KeyChar.ToString().ToUpper() -eq "Y") {
 }
 Write-Host ""
 
-# --- 2. Clear Windows Temp Files (Optional) ---
+# Windows Temp cleanup (optional)
 $tempSize = Get-WindowsTempSize
 if ($tempSize -gt 0) {
     if ($tempSize -gt 1000) {
@@ -855,7 +842,7 @@ if ($tempSize -gt 0) {
     Write-Host ""
     $tempChoice = [Console]::ReadKey($true)
     if ($tempChoice.KeyChar.ToString().ToUpper() -eq "Y") {
-        # Check for any running temp-locking processes.
+        # Offer to close apps that may be holding temp files open.
         $tempLockingApps = Get-TempLockingProcesses
         if ($tempLockingApps.Count -gt 0) {
             Write-Host "`nThe following applications are currently running and may block temp file clearance:" -ForegroundColor Yellow
@@ -903,26 +890,26 @@ if ($tempSize -gt 0) {
 }
 Write-Host ""
 
-# --- 3. Check available disk space ---
+# Check free disk space.
 Check-DiskSpace
-# --- 4. Check current CPU usage ---
+# Sample CPU usage.
 Check-CPUUsage
-# --- 5. Flush the DNS cache ---
+# Flush the DNS resolver cache.
 Flush-DNSCache
-# --- 6. Check RAM usage ---
+# Sample memory usage.
 Check-RAMUsage
 
-# Insert extra line break between RAM check output and GPU detection.
+
 Write-Host ""
 
-# --- 7. Check GPU drivers and version(s) ---
+# Check the installed graphics drivers.
 Check-GPUDrivers
 Write-Host ""  # Blank line between GPU and System Uptime
-# --- 8. Log system uptime ---
+# Check how long Windows has been running.
 Check-SystemUptime
 Write-Host ""  # Blank line between uptime alerts and Cache Smash
 
-# --- Display "Cache Smash..." message with loading dots for 5 seconds ---
+# Original Cache Smash animation.
 $endTime = (Get-Date).AddSeconds(5)
 $dotStates = @(".", "..", "...")
 $dotIndex = 0
@@ -935,32 +922,30 @@ while ((Get-Date) -lt $endTime) {
 Write-Host ""
 Start-Sleep -Seconds 2
 
-# --- 9. Clear browser caches ---
+# Try to clear browser caches.
 Clear-BrowserCaches
 
-# --- Warning for DISM scan ---
+# Explain the DISM check before it starts.
 Write-Host ""
 Write-Host "We're about to check the component store using DISM /CheckHealth. This check detects problems but does not repair them." -ForegroundColor Yellow
 Write-Host "If it's taking longer than expected, please be patient as it verifies the component store." -ForegroundColor Yellow
 Start-Sleep -Seconds 3
 Write-Host ""
 
-# --- 10. Run DISM /CheckHealth ---
+# Check component store health with DISM.
 Run-DISMCheckHealth
 
-Write-Host ""  # Extra line break after DISM scan
+Write-Host ""  
 
-# --- 11. Run SFC Scan ---
+# Run the Windows system file check.
 Run-SFCScan
 
-Write-Host ""  # Extra line break before Windows Updates
+Write-Host ""  
 
-# --- 12. Check for and install Windows Updates ---
+# Check Windows Update and attempt installation.
 Install-WindowsUpdates
 
-# -------------------------------
-# Final Logging and Human-Readable Report
-# -------------------------------
+# Write both reports after the last maintenance step.
 Write-Host ""
 $finalFree = (Get-PSDrive -Name $selectedDrive.Substring(0,1)).Free
 $spaceFreedBytes = $finalFree - $initialFreeSpace
@@ -1001,7 +986,7 @@ Write-Host ""
 try {
     Stop-Transcript
 } catch {
-    # No transcript active.
+    # A transcript isn't started on every launch.
 }
 
 
