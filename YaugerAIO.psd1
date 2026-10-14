@@ -31,7 +31,7 @@
 
             ProjectUri = 'https://github.com/Graytools/YaugerAIO'
 
-            ReleaseNotes = 'Windows maintenance launcher with guided workflow and readable completion reports.'
+            ReleaseNotes = 'Adds opt-in DISM RestoreHealth for repairable damage with a follow-up health check; clarifies browser cache status and maintenance reports.'
         }
     }
 } 
