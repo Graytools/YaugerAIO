@@ -1,7 +1,5 @@
-# Functional tests for original YaugerAIO temp-directory maintenance functions.
-# SAFETY: Never dot-source YaugerAIO.ps1: its top-level code runs maintenance.
-# Load only the temp functions from the syntax tree.
-# Real removals in this file are restricted to Pester's disposable TestDrive.
+# Load the temp cleanup functions without starting the main script.
+# Any files actually deleted in these tests are under Pester's TestDrive.
 
 BeforeAll {
     $scriptPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'YaugerAIO.ps1'
@@ -23,7 +21,7 @@ BeforeAll {
         . ([scriptblock]::Create($functionAst.Extent.Text))
     }
 
-    # Isolated logging stub; do not write a real desktop maintenance log.
+    # Keep test messages here instead of writing to someone's Desktop.
     function Log {
         param($Message, $Color)
     }
