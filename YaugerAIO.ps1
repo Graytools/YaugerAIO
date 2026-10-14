@@ -457,39 +457,52 @@ For best results, restart at least once every few days.
 function Install-WindowsUpdates {
     Write-Host "Checking for Windows updates..." -ForegroundColor Cyan
     try {
-        $UpdateSession = New-Object -ComObject Microsoft.Update.Session
-        $UpdateSearcher = $UpdateSession.CreateUpdateSearcher()
-        $SearchResult = $UpdateSearcher.Search("IsInstalled=0 and Type='Software'")
-        if ($SearchResult.Updates.Count -eq 0) {
-            Write-Host "Windows Updates are current." -ForegroundColor Green
+        $updateSession = New-Object -ComObject Microsoft.Update.Session
+        $searcher = $updateSession.CreateUpdateSearcher()
+        $searchResult = $searcher.Search("IsInstalled=0 and Type='Software'")
+        if ($searchResult.Updates.Count -eq 0) {
+            Write-Host "No applicable pending software updates found." -ForegroundColor Green
+            Add-MaintenanceResult -Name 'Windows Update' -Status PASS -Summary 'No pending software updates returned by Windows Update search.'
             return
         }
-        Write-Host "Updates found:" -ForegroundColor Gray
-        $UpdatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
-        foreach ($update in $SearchResult.Updates) {
+        $updates = New-Object -ComObject Microsoft.Update.UpdateColl
+        foreach ($update in $searchResult.Updates) {
             Write-Host "Update: $($update.Title)" -ForegroundColor Gray
-            if (-not $update.EulaAccepted) {
-                $update.AcceptEula() | Out-Null
-            }
-            $UpdatesToDownload.Add($update) | Out-Null
+            $script:log += "Windows Update found: $($update.Title)"
+            if (-not $update.EulaAccepted) { $update.AcceptEula() | Out-Null }
+            [void]$updates.Add($update)
         }
-        if ($UpdatesToDownload.Count -gt 0) {
-            Write-Host "Downloading updates..." -ForegroundColor Cyan
-            $Downloader = $UpdateSession.CreateUpdateDownloader()
-            $Downloader.Updates = $UpdatesToDownload
-            $Downloader.Download() | Out-Null
-            Write-Host "Installing updates..." -ForegroundColor Cyan
-            $Installer = $UpdateSession.CreateUpdateInstaller()
-            $Installer.Updates = $UpdatesToDownload
-            $InstallationResult = $Installer.Install()
-            Write-Host "Updates Installed: $($InstallationResult.UpdatesInstalled)" -ForegroundColor Gray
-            if ($InstallationResult.RebootRequired) {
-                $script:needsRestart = $true
-                Write-Host "A restart is required to complete the update installation." -ForegroundColor Yellow
-            }
+        Write-Host "Downloading updates..." -ForegroundColor Cyan
+        $downloader = $updateSession.CreateUpdateDownloader()
+        $downloader.Updates = $updates
+        $downloadResult = $downloader.Download()
+        $script:log += 'Windows Update download result code: ' + $downloadResult.ResultCode
+        if ($downloadResult.ResultCode -ne 2) {
+            Add-MaintenanceResult -Name 'Windows Update' -Status WARN -Summary 'Not all updates downloaded successfully; installation was not attempted.' -Action 'Open Settings > Windows Update, review errors, and retry when convenient.'
+            Write-Host "Windows Update downloads were not fully successful. Installation skipped." -ForegroundColor Yellow
+            return
         }
-    }
-    catch {
+        Write-Host "Installing updates..." -ForegroundColor Cyan
+        $installer = $updateSession.CreateUpdateInstaller()
+        $installer.Updates = $updates
+        $installResult = $installer.Install()
+        $script:log += 'Windows Update installation result code: ' + $installResult.ResultCode
+        if ($installResult.RebootRequired) {
+            $script:needsRestart = $true
+            Write-Host "A restart is required to complete the update installation." -ForegroundColor Yellow
+        }
+        if ($installResult.ResultCode -eq 2) {
+            Add-MaintenanceResult -Name 'Windows Update' -Status PASS -Summary "$($updates.Count) software update(s) were reported installed successfully."
+            Write-Host "Windows Update reports successful installation." -ForegroundColor Green
+        } elseif ($installResult.ResultCode -eq 3) {
+            Add-MaintenanceResult -Name 'Windows Update' -Status WARN -Summary 'Windows Update completed with errors; some updates may be missing.' -Action 'Open Settings > Windows Update and review update history or retry failed updates.'
+            Write-Host "Windows Update installed some updates but reported errors." -ForegroundColor Yellow
+        } else {
+            Add-MaintenanceResult -Name 'Windows Update' -Status FAIL -Summary "Windows Update installation returned result code $($installResult.ResultCode)." -Action 'Review Windows Update history and the technical log; retry updates through Settings.'
+            Write-Host "Windows Update installation did not complete successfully." -ForegroundColor Red
+        }
+    } catch {
+        Add-MaintenanceResult -Name 'Windows Update' -Status FAIL -Summary 'Windows Update failed or was unavailable.' -Action 'Check Windows Update in Settings, and review the technical log for details.'
         Log "Error during Windows update process: $_" "Red"
     }
 }
@@ -519,13 +532,29 @@ function Run-DISMCheckHealth {
         $script:log += "DISM /CheckHealth status: $status (exit code $exitCode)`n$dismOutput`n"
 
         switch ($status) {
-            'Healthy' { Write-Host "No component store corruption detected. Moving on to SFC." -ForegroundColor Green }
-            'NotRepairable' { Write-Host "DISM reports that the component store is not repairable. Further troubleshooting is required." -ForegroundColor Red }
-            'Repairable' { Write-Host "DISM detected repairable corruption. /CheckHealth does not repair it; consider DISM /RestoreHealth." -ForegroundColor Yellow }
-            'Failed' { Write-Host "DISM /CheckHealth failed (exit code $exitCode). Review the output in the log." -ForegroundColor Red }
-            default { Write-Host "DISM completed, but its health status was not recognized. See the logged output." -ForegroundColor Yellow }
+            'Healthy' { 
+                Add-MaintenanceResult -Name 'DISM component store' -Status PASS -Summary 'No component store corruption detected.'
+                Write-Host "No component store corruption detected. Moving on to SFC." -ForegroundColor Green
+            }
+            'NotRepairable' {
+                Add-MaintenanceResult -Name 'DISM component store' -Status FAIL -Summary 'Component store reported not repairable.' -Action 'Review DISM output and seek advanced servicing or recovery support.'
+                Write-Host "DISM reports that the component store is not repairable. Further troubleshooting is required." -ForegroundColor Red
+            }
+            'Repairable' {
+                Add-MaintenanceResult -Name 'DISM component store' -Status WARN -Summary 'Repairable component store corruption detected, but no repair was performed.' -Action 'Run DISM /Online /Cleanup-Image /RestoreHealth from an elevated prompt, then rerun SFC.'
+                Write-Host "DISM detected repairable corruption. /CheckHealth does not repair it; consider DISM /RestoreHealth." -ForegroundColor Yellow
+            }
+            'Failed' {
+                Add-MaintenanceResult -Name 'DISM component store' -Status FAIL -Summary "DISM failed with exit code $exitCode." -Action 'Review the technical log and retry DISM from an elevated prompt.'
+                Write-Host "DISM /CheckHealth failed (exit code $exitCode). Review the output in the log." -ForegroundColor Red
+            }
+            default {
+                Add-MaintenanceResult -Name 'DISM component store' -Status CHECK -Summary 'DISM result was not recognized.' -Action 'Read the raw DISM output in the technical log before drawing a conclusion.'
+                Write-Host "DISM completed, but its health status was not recognized. See the logged output." -ForegroundColor Yellow
+            }
         }
     } catch {
+        Add-MaintenanceResult -Name 'DISM component store' -Status FAIL -Summary 'DISM could not start or process its output.' -Action 'Review the technical log and confirm Windows servicing tools are available.'
         Log "DISM /CheckHealth could not run: $_" "Red"
     }
     Write-Host ""
@@ -560,13 +589,29 @@ function Run-SFCScan {
         $script:log += "SFC /scannow status: $status (exit code $exitCode)`n$sfcOutput`n"
 
         switch ($status) {
-            'Healthy' { Write-Host "SFC found no integrity violations." -ForegroundColor Green }
-            'Repaired' { Write-Host "SFC reports that corrupt system files were repaired." -ForegroundColor Green }
-            'Unresolved' { Write-Host "SFC could not repair all corrupt files. Review CBS.log for details." -ForegroundColor Yellow }
-            'Failed' { Write-Host "SFC did not complete successfully (exit code $exitCode). Review the output in the log." -ForegroundColor Red }
-            default { Write-Host "SFC completed, but its result was not recognized. Review the output in the log." -ForegroundColor Yellow }
+            'Healthy' {
+                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows Resource Protection found no integrity violations.'
+                Write-Host "SFC found no integrity violations." -ForegroundColor Green
+            }
+            'Repaired' {
+                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'SFC reports that corrupt system files were repaired.'
+                Write-Host "SFC reports that corrupt system files were repaired." -ForegroundColor Green
+            }
+            'Unresolved' {
+                Add-MaintenanceResult -Name 'SFC system files' -Status WARN -Summary 'SFC could not repair some corrupt system files.' -Action 'Review CBS.log and try DISM /RestoreHealth followed by sfc /scannow.'
+                Write-Host "SFC could not repair all corrupt files. Review CBS.log for details." -ForegroundColor Yellow
+            }
+            'Failed' {
+                Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary "SFC failed or could not finish (exit code $exitCode)." -Action 'Check CBS.log and rerun sfc /scannow from an elevated prompt.'
+                Write-Host "SFC did not complete successfully (exit code $exitCode). Review the output in the log." -ForegroundColor Red
+            }
+            default {
+                Add-MaintenanceResult -Name 'SFC system files' -Status CHECK -Summary 'SFC completed with unrecognized output.' -Action 'Read the SFC section of the technical log before assuming files are healthy.'
+                Write-Host "SFC completed, but its result was not recognized. Review the output in the log." -ForegroundColor Yellow
+            }
         }
     } catch {
+        Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'SFC could not start or process its output.' -Action 'Review the technical log and try SFC in an elevated prompt.'
         Log "SFC scan could not run: $_" "Red"
     }
 }
@@ -626,7 +671,9 @@ function Clear-BrowserCaches {
         } else {
             Log "✔ User doesn't have Firefox Browser." "Cyan"
         }
+        Add-MaintenanceResult -Name 'Browser caches' -Status CHECK -Summary 'Cache deletion was attempted for supported browser profiles; completion is not verified.' -Action 'Close browsers and rerun if browser storage remains unusually high.'
     } catch {
+        Add-MaintenanceResult -Name 'Browser caches' -Status FAIL -Summary 'Browser cache cleanup encountered an error.' -Action 'Close running browsers, then retry; see the technical log.'
         Log "Failed to clear browser caches: $_" "Red"
     }
 }
@@ -644,9 +691,16 @@ function Run-CleanMgr {
             Start-Sleep -Milliseconds 100
         }
         Write-Host ""
-        Log "✔ Disk Cleanup executed on ${selectedDrive}." "Cyan"
+        if ($process.ExitCode -eq 0) {
+            Add-MaintenanceResult -Name 'Disk Cleanup' -Status CHECK -Summary 'Disk Cleanup exited successfully; actual cleanup depends on its saved configuration.' -Action 'If storage did not improve, review Disk Cleanup settings and select cleanup categories manually.'
+            Log "✔ Disk Cleanup executed on ${selectedDrive}." "Cyan"
+        } else {
+            Add-MaintenanceResult -Name 'Disk Cleanup' -Status FAIL -Summary "Disk Cleanup exited with code $($process.ExitCode)." -Action 'Open Windows Disk Cleanup and inspect the selected cleanup profile.'
+            Log "Disk Cleanup exited with code $($process.ExitCode)." "Red"
+        }
         Write-Host ""
     } catch {
+        Add-MaintenanceResult -Name 'Disk Cleanup' -Status FAIL -Summary 'Disk Cleanup failed to launch or complete.' -Action 'Run Disk Cleanup manually from Windows.'
         Log "Disk Cleanup failed on ${selectedDrive}: $_" "Red"
     }
 }
@@ -671,9 +725,11 @@ function Get-WindowsTempSize {
 }
 
 function Clear-WindowsTemp {
+    $script:tempCleanupOutcome = 'CHECK'
     try {
         $tempPath = $env:TEMP
         if ([string]::IsNullOrWhiteSpace($tempPath) -or -not (Test-Path -LiteralPath $tempPath -PathType Container)) {
+            $script:tempCleanupOutcome = 'SKIP'
             Log "Skipped Windows Temp cleanup: TEMP directory is unavailable." "Yellow"
             return
         }
@@ -681,28 +737,36 @@ function Clear-WindowsTemp {
         $resolvedPath = (Resolve-Path -LiteralPath $tempPath -ErrorAction Stop).ProviderPath
         $pathRoot = [System.IO.Path]::GetPathRoot($resolvedPath)
         if ([string]::IsNullOrWhiteSpace($pathRoot) -or $resolvedPath.TrimEnd('\', '/') -eq $pathRoot.TrimEnd('\', '/')) {
+            $script:tempCleanupOutcome = 'FAIL'
             Log "Skipped Windows Temp cleanup: TEMP must not be a filesystem root." "Red"
             return
         }
 
         $tempDirectory = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
         if (($tempDirectory.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $script:tempCleanupOutcome = 'FAIL'
             Log "Skipped Windows Temp cleanup: TEMP must not be a symbolic link or junction." "Red"
             return
         }
 
         $cleanupErrors = @()
+        $skippedLinks = 0
         foreach ($item in Get-ChildItem -LiteralPath $resolvedPath -Force -ErrorAction Stop) {
             if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $skippedLinks++
                 Log "Skipped link or junction in Windows Temp: $($item.Name)" "Yellow"
                 continue
             }
             Remove-Item -LiteralPath $item.FullName -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable +cleanupErrors
         }
-        if ($cleanupErrors.Count -gt 0) {
-            Log "Windows Temp cleanup could not remove $($cleanupErrors.Count) item(s), possibly because they are in use." "Yellow"
+        if ($cleanupErrors.Count -gt 0 -or $skippedLinks -gt 0) {
+            $script:tempCleanupOutcome = 'WARN'
+            Log "Windows Temp cleanup could not remove $($cleanupErrors.Count) item(s); skipped $skippedLinks link(s)." "Yellow"
+        } else {
+            $script:tempCleanupOutcome = 'PASS'
         }
     } catch {
+        $script:tempCleanupOutcome = 'FAIL'
         Log "Failed to clear Windows Temp files: $_" "Red"
     }
 }
