@@ -1,7 +1,7 @@
 @{
     RootModule = 'YaugerAIO.psm1'
 
-    ModuleVersion = '1.5.1'
+    ModuleVersion = '1.5.2'
 
     GUID = '61202a7e-012b-4a64-888e-5dbacee33014'
 
