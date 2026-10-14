@@ -1,35 +1,35 @@
-# Set console buffer and window size using .NET methods for better performance
+# Try to size the old console window; this wasn't reliable across terminal hosts.
 $desiredWidth = 130
 $desiredHeight = 50
 
-# Get current buffer size to ensure we don't exceed limits
+# Respect the current buffer limits.
 $currentBuffer = $host.UI.RawUI.BufferSize
 
-# Set window size first (must be smaller than buffer)
+# Windows requires the window to fit inside the buffer.
 try {
     $windowSize = New-Object System.Management.Automation.Host.Size($desiredWidth, [Math]::Min($desiredHeight, $currentBuffer.Height))
     $host.UI.RawUI.WindowSize = $windowSize
 } catch [System.Management.Automation.SetValueInvocationException] {
-    # Silently continue if window size cannot be set
+    # Some terminals don't support resizing.
 }
 
-# Then set buffer size (must be larger than window)
+# The buffer needs to fit the window.
 try {
     $bufferSize = New-Object System.Management.Automation.Host.Size($desiredWidth, $desiredHeight)
     $host.UI.RawUI.BufferSize = $bufferSize
 } catch [System.Management.Automation.SetValueInvocationException] {
-    # Silently continue if buffer size cannot be set
+    # Keep the existing size if the host refuses.
 }
 
-# Set the default runspace for asynchronous handlers
+# Keep the current runspace available to the event handlers.
 $global:myRunspace = [runspace]::DefaultRunspace
 [runspace]::DefaultRunspace = $global:myRunspace
 
-# --- C# Type Definitions ---
+# Win32 calls used by the old launcher.
 Add-Type -AssemblyName System.Collections.Concurrent
 Add-Type -AssemblyName System.Security.Cryptography
 
-# Check if types already exist before adding them
+# Don't register the same type twice in one session.
 $existingTypes = [System.AppDomain]::CurrentDomain.GetAssemblies() | 
     ForEach-Object { $_.GetTypes() } | 
     Where-Object { $_.Name -in @('ThreadedFileProcessor', 'ThreadedHashCalculator') }
@@ -141,7 +141,7 @@ public class ThreadedHashCalculator {
 "@
 }
 
-# --- Auto-Elevation Snippet Start ---
+# Request admin rights for the legacy script.
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
     $psCmd = if ($PSVersionTable.PSEdition -eq 'Core') { "pwsh.exe" } else { "powershell.exe" }
     $scriptPath = $MyInvocation.MyCommand.Path
@@ -158,9 +158,9 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     Start-Process $psCmd -Verb RunAs -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $quotedScriptPath
     exit
 }
-# --- Auto-Elevation Snippet End ---
 
-# Define Next Steps for the overall workflow using a hashtable for O(1) lookup
+
+# Names of the next servicing tasks.
 $script:NextStepFor = @{
     'DISM' = 'SFC Scan'
     'SFC'  = 'Windows Updates'
@@ -168,11 +168,11 @@ $script:NextStepFor = @{
 
 $DebugDism = $false
 
-# Global variables for scan summaries with StringBuilder for better memory management
+# Collect the DISM and SFC output.
 $global:DISMSummary = New-Object System.Text.StringBuilder
 $global:SFCSummary = New-Object System.Text.StringBuilder
 
-# --- Function to Bring Console to Foreground using P/Invoke ---
+# Ask Windows to bring the console forward.
 function Focus-Console {
     Add-Type @"
 using System;
@@ -186,9 +186,9 @@ public class Win32 {
     [Win32]::SetForegroundWindow($hwnd) | Out-Null
 }
 
-# --- Function to Get Processes That May Lock Temp Files ---
+# Look for apps that might hold temp files open.
 function Get-TempLockingProcesses {
-    # Use HashSet for O(1) lookups
+    # Keep one entry per known app name.
     $commonAppsMapping = @{
         "chrome"            = "Google Chrome"
         "firefox"           = "Mozilla Firefox"
@@ -228,11 +228,11 @@ function Get-TempLockingProcesses {
         "gog"               = "GOG Galaxy"
     }
     
-    # Use HashSet for unique process names
+    # Don't report the same process twice.
     $uniqueProcesses = New-Object System.Collections.Generic.HashSet[string]
     $result = @()
     
-    # Get processes in a single call and filter
+    # Get the running processes before filtering.
     Get-Process | Where-Object { $commonAppsMapping.ContainsKey($_.ProcessName.ToLower()) } | ForEach-Object {
         $key = $_.ProcessName.ToLower()
         if ($uniqueProcesses.Add($key)) {
@@ -246,7 +246,7 @@ function Get-TempLockingProcesses {
     return $result | Sort-Object FriendlyName
 }
 
-# --- Determine Primary Drive ---
+# Prefer the system drive.
 $selectedDrive = $env:SystemDrive
 if (-not $selectedDrive -or -not ($selectedDrive -match "^[A-Z]:$")) {
     Write-Host "SystemDrive environment variable is not set or invalid. Determining primary drive..." -ForegroundColor Yellow
@@ -257,7 +257,7 @@ else {
     Write-Host "System drive: ${selectedDrive}" -ForegroundColor White
 }
 
-# Store initial free space for accurate total space freed calculation
+# Use a free-space snapshot for the rough cleanup estimate.
 $initialFreeSpace = (Get-PSDrive -Name $selectedDrive.Substring(0, 1)).Free
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
@@ -306,7 +306,7 @@ function Show-Banner {
     Write-Host $asciiArt
 }
 
-# --- Error Handling and Circuit Breaker Configuration ---
+# Track repeated errors in this older implementation.
 $script:ErrorThreshold = 3
 $script:ErrorCount = 0
 $script:CircuitBreakerState = @{
@@ -342,7 +342,7 @@ function Update-CircuitBreaker {
     }
 }
 
-# --- Defensive Value Validation ---
+# Validate values before using them in system commands.
 function Test-ValidDrive {
     param([string]$Drive)
     if ([string]::IsNullOrWhiteSpace($Drive)) { return $false }
@@ -358,7 +358,7 @@ function Test-ValidPath {
     return $true
 }
 
-# --- Enhanced Logging with Error Context ---
+# Error messages for troubleshooting.
 function Log-Error {
     param(
         [string]$Message,
@@ -383,7 +383,7 @@ function Log-Error {
     }
 }
 
-# --- Safe Process Management ---
+# Process handling used by the original cleanup functions.
 function Start-SafeProcess {
     param(
         [string]$FilePath,
@@ -391,7 +391,7 @@ function Start-SafeProcess {
         [System.Collections.Generic.List[string]]$Output
     )
     try {
-        # Check for system executables in Windows directory
+        # Check Windows paths before running maintenance executables.
         if ($FilePath -in @('dism.exe', 'sfc.exe')) {
             $systemPath = Join-Path $env:SystemRoot 'System32'
             $fullPath = Join-Path $systemPath $FilePath
@@ -452,7 +452,7 @@ function Start-SafeProcess {
     }
 }
 
-# --- Enhanced System Checks with Circuit Breaker ---
+# Stop retrying checks after repeated failures.
 function Check-SystemHealth {
     param([string]$Operation)
     
@@ -512,7 +512,7 @@ function Check-SystemHealth {
     }
 }
 
-# --- Safe File Operations ---
+# File operations for the legacy temp cleaner.
 function Remove-SafeFile {
     param([string]$Path)
     try {
@@ -534,7 +534,7 @@ function Remove-SafeFile {
     }
 }
 
-# --- Enhanced Browser Cache Clearing ---
+# Browser cache locations handled by this version.
 function Clear-BrowserCaches {
     try {
         $browserPaths = @{
@@ -657,10 +657,10 @@ function Clear-BrowserCaches {
     }
 }
 
-# --- System Check Functions ---
+# System checks
 function Check-DiskSpace {
     try {
-        # Use WMI for better performance
+        # Get the value from Windows management data.
         $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='${selectedDrive}'" -ErrorAction Stop
         $freeGB = [math]::Round($disk.FreeSpace / 1GB, 2)
         $totalGB = [math]::Round($disk.Size / 1GB, 2)
@@ -674,7 +674,7 @@ function Check-DiskSpace {
 
 function Check-CPUUsage {
     try {
-        # Use WMI for CPU usage
+        # Read the CPU value from Windows management data.
         $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
         $usage = $cpu.LoadPercentage
         Log "CPU Usage: $usage%" "Cyan"
@@ -688,7 +688,7 @@ function Flush-DNSCache {
     try {
         Write-Host "Flushing DNS cache..." -ForegroundColor Cyan
         $before = (Get-DnsClientCache).Count
-        # Use .NET method for DNS flush
+        # Flush the local DNS cache.
         [System.Diagnostics.Process]::Start("ipconfig", "/flushdns") | Wait-Process
         $after = (Get-DnsClientCache).Count
         $flushed = $before - $after
@@ -703,7 +703,7 @@ function Flush-DNSCache {
 
 function Check-RAMUsage {
     try {
-        # Use WMI for better performance
+        # Get the value from Windows management data.
         $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
         $total = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
         $free = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
@@ -723,7 +723,7 @@ function Check-RAMUsage {
 
 function Check-GPUDrivers {
     try {
-        # Use WMI for better performance
+        # Get the value from Windows management data.
         $gpus = Get-CimInstance Win32_VideoController -ErrorAction Stop
         foreach ($gpu in $gpus) {
             if ($gpu.DriverDate) {
@@ -760,7 +760,7 @@ function Check-GPUDrivers {
 
 function Check-SystemUptime {
     try {
-        # Use WMI for better performance
+        # Get the value from Windows management data.
         $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
         $uptime = (Get-Date) - $os.LastBootUpTime
         $days = [math]::Round($uptime.TotalDays, 2)
@@ -805,7 +805,7 @@ function Install-WindowsUpdates {
 
         Write-Host "Checking for Windows updates..." -ForegroundColor Cyan
         
-        # Use COM object for Windows Update with proper cleanup
+        # Talk to Windows Update through its COM interface.
         $updateSession = $null
         $updateSearcher = $null
         $searchResult = $null
@@ -827,7 +827,7 @@ function Install-WindowsUpdates {
             Write-Host "Updates found:" -ForegroundColor Gray
             $updatesToDownload = New-Object -ComObject Microsoft.Update.UpdateColl
             
-            # Process updates in parallel with proper error handling
+            # Process the updates returned by Windows Update.
             $updateResults = @()
             $searchResult.Updates | ForEach-Object -ThrottleLimit 10 -Parallel {
                 $update = $_
@@ -878,7 +878,7 @@ function Install-WindowsUpdates {
             return $true
         }
         finally {
-            # Cleanup COM objects
+            # Release the Windows Update COM references.
             if ($installer) { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($installer) }
             if ($downloader) { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($downloader) }
             if ($updatesToDownload) { [System.Runtime.Interopservices.Marshal]::ReleaseComObject($updatesToDownload) }
@@ -894,10 +894,10 @@ function Install-WindowsUpdates {
     }
 }
 
-# --------------------------------------------------------------
-# Function to execute a DISM /CheckHealth scan.
-# Instead of showing all details, it logs full output and displays only a final alert message.
-# --------------------------------------------------------------
+
+# /CheckHealth looks for component store problems; it won't fix them.
+# Keep the full output in the log and show a shorter result in the console.
+
 function Run-DISMCheckHealth {
     try {
         if (-not (Test-CircuitBreaker)) {
@@ -936,9 +936,9 @@ function Run-DISMCheckHealth {
     }
 }
 
-# -------------------------------
-# SFC Scan Function: Output native SFC results in real time.
-# -------------------------------
+
+# Keep the native SFC output visible.
+
 function Run-SFCScan {
     try {
         if (-not (Test-CircuitBreaker)) {
@@ -966,9 +966,9 @@ function Run-SFCScan {
     }
 }
 
-# --------------------------------------------------------------
-# Functions for clearing browser caches, disk cleanup, and temporary files.
-# --------------------------------------------------------------
+
+# Cleanup commands
+
 function Run-CleanMgr {
     try {
         Write-Host -NoNewline -ForegroundColor Cyan "Cleaning $selectedDrive Drive"
@@ -1041,7 +1041,7 @@ function Clear-WindowsTemp {
         $maxErrors = 50
         $successCount = 0
 
-        # Delete files in parallel with error handling
+        # Remove the files selected by the cleanup routine.
         Get-ChildItem -Path $tempPath -Recurse -ErrorAction SilentlyContinue | 
         Where-Object { $_.PSIsContainer -eq $false } |
         ForEach-Object -ThrottleLimit 100 -Parallel {
@@ -1069,7 +1069,7 @@ function Clear-WindowsTemp {
     }
 }
 
-# New function to wrap text without breaking words.
+# Wrap longer console messages at word boundaries.
 function Wrap-Text {
     param(
         [Parameter(Mandatory = $true)]
@@ -1094,7 +1094,7 @@ function Wrap-Text {
     return $result
 }
 
-# --- Enhanced Error Handling and Retry Logic ---
+# Retry handling used by the old checks.
 function Invoke-WithRetry {
     param(
         [scriptblock]$Action,
@@ -1131,7 +1131,7 @@ function Invoke-WithRetry {
     }
 }
 
-# --- Enhanced Performance Monitoring ---
+# Record a few live performance readings.
 function Start-PerformanceMonitoring {
     param(
         [string[]]$CounterNames = @(
@@ -1148,7 +1148,7 @@ function Start-PerformanceMonitoring {
 
     while ((Get-Date) -lt $endTime) {
         try {
-            # CPU Usage
+            # CPU
             $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
             $metrics += [PSCustomObject]@{
                 Name = "CPU"
@@ -1156,7 +1156,7 @@ function Start-PerformanceMonitoring {
                 Timestamp = Get-Date
             }
 
-            # Memory Usage
+            # Memory
             $os = Get-CimInstance Win32_OperatingSystem
             $totalMemory = [math]::Round($os.TotalVisibleMemorySize / 1MB, 2)
             $freeMemory = [math]::Round($os.FreePhysicalMemory / 1MB, 2)
@@ -1168,7 +1168,7 @@ function Start-PerformanceMonitoring {
                 Timestamp = Get-Date
             }
 
-            # Disk Usage
+            # Disk
             $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='${selectedDrive}'"
             $freeSpace = [math]::Round($disk.FreeSpace / 1GB, 2)
             $totalSpace = [math]::Round($disk.Size / 1GB, 2)
@@ -1180,7 +1180,7 @@ function Start-PerformanceMonitoring {
             }
         }
         catch {
-            # Silently continue on errors
+            # Don't stop the remaining checks on this failure.
         }
 
         Start-Sleep -Milliseconds $SampleIntervalMs
@@ -1190,7 +1190,7 @@ function Start-PerformanceMonitoring {
 }
 
 
-# --- Enhanced File Processing with Hashing ---
+# Hashing helper from the legacy cleanup flow.
 function Process-FilesWithHash {
     param(
         [string[]]$Files,
@@ -1217,7 +1217,7 @@ function Process-FilesWithHash {
         $hasher.Cancel()
     }
 
-    # Convert ConcurrentDictionary to regular Dictionary using PowerShell syntax
+    # Convert concurrent results into an ordinary dictionary for display.
     $fileStatsDict = @{}
     foreach ($kvp in $processor._fileStats.GetEnumerator()) {
         $fileStatsDict[$kvp.Key] = $kvp.Value
@@ -1230,7 +1230,7 @@ function Process-FilesWithHash {
     }
 }
 
-# --- Enhanced System Health Check with Threading ---
+# Old threaded system health check.
 function Get-SystemHealthThreaded {
     try {
         if (-not (Test-CircuitBreaker)) {
@@ -1259,7 +1259,7 @@ function Get-SystemHealthThreaded {
             $results[$task.Key] = Invoke-WithRetry -Action $task.Value -OperationName $task.Key -Errors $errors
         }
 
-        # Process results
+        # Combine results after the checks finish.
         foreach ($result in $results.GetEnumerator()) {
             if ($result.Value -is [System.Exception]) {
                 Log "Errors in $($result.Key): $($result.Value.Message)" "Red"
@@ -1283,9 +1283,9 @@ function Get-SystemHealthThreaded {
     }
 }
 
-# -------------------------------
-# Main Section
-# -------------------------------
+
+# Start the guided workflow.
+
 Show-Banner
 
 Write-Host "During this session, we will:" -ForegroundColor White
@@ -1312,7 +1312,7 @@ Write-Host "Please press Enter to begin." -ForegroundColor Yellow
 [void][System.Console]::ReadKey($true)
 Write-Host ""
 
-# --- 1. Disk Cleanup (Optional) ---
+# Optional Disk Cleanup.
 Write-Host "Would you like to run Disk Cleanup? (Y/N)" -ForegroundColor Yellow
 $key = [Console]::ReadKey($true)
 if ($key.KeyChar.ToString().ToUpper() -eq "Y") {
@@ -1325,7 +1325,7 @@ else {
 }
 Write-Host ""
 
-# --- 2. Clear Windows Temp Files (Optional) ---
+# Optional temp cleanup.
 $tempSize = Get-WindowsTempSize
 if ($tempSize -gt 0) {
     if ($tempSize -gt 1000) {
@@ -1339,7 +1339,7 @@ if ($tempSize -gt 0) {
     Write-Host ""
     $tempChoice = [Console]::ReadKey($true)
     if ($tempChoice.KeyChar.ToString().ToUpper() -eq "Y") {
-        # Check for any running temp-locking processes.
+        # Check for apps holding temp files open.
         $tempLockingApps = Get-TempLockingProcesses
         if ($tempLockingApps.Count -gt 0) {
             Write-Host "`nThe following applications are currently running and may block temp file clearance:" -ForegroundColor Yellow
@@ -1372,26 +1372,26 @@ else {
 }
 Write-Host ""
 
-# --- 3. Check available disk space ---
+# Disk space
 Check-DiskSpace
-# --- 4. Check current CPU usage ---
+# CPU sample
 Check-CPUUsage
-# --- 5. Flush the DNS cache ---
+# DNS cache
 Flush-DNSCache
-# --- 6. Check RAM usage ---
+# Memory sample
 Check-RAMUsage
 
-# Insert extra line break between RAM check output and GPU detection.
+
 Write-Host ""
 
-# --- 7. Check GPU drivers and version(s) ---
+# GPU drivers
 Check-GPUDrivers
 Write-Host ""  # Blank line between GPU and System Uptime
-# --- 8. Log system uptime ---
+# Uptime
 Check-SystemUptime
 Write-Host ""  # Blank line between uptime alerts and Cache Smash
 
-# --- Display "Cache Smash..." message with loading dots for 5 seconds ---
+# Keep the original Cache Smash animation.
 $endTime = (Get-Date).AddSeconds(5)
 $dotStates = @(".", "..", "...")
 $dotIndex = 0
@@ -1404,32 +1404,32 @@ while ((Get-Date) -lt $endTime) {
 Write-Host ""
 Start-Sleep -Seconds 2
 
-# --- 9. Clear browser caches ---
+# Browser caches
 Clear-BrowserCaches
 
-# --- Warning for DISM scan ---
+# Explain the DISM check before running it.
 Write-Host ""
 Write-Host "We're about to run DISM Scan to check for component store corruption. If we find and fix anything, we'll let you know." -ForegroundColor Yellow
 Write-Host "If it's taking longer than expected, please be patient as it verifies the component store." -ForegroundColor Yellow
 Start-Sleep -Seconds 3
 Write-Host ""
 
-# --- 10. Run DISM /CheckHealth ---
+# DISM
 Run-DISMCheckHealth
 
 Write-Host ""  # Extra line break after DISM scan
 
-# --- 11. Run SFC Scan ---
+# SFC
 Run-SFCScan
 
 Write-Host ""  # Extra line break before Windows Updates
 
-# --- 12. Check for and install Windows Updates ---
+# Windows Update
 Install-WindowsUpdates
 
-# -------------------------------
-# Final Logging and Summary
-# -------------------------------
+
+# End-of-run log
+
 Write-Host ""
 $finalFree = (Get-PSDrive -Name $selectedDrive.Substring(0, 1)).Free
 $spaceFreedBytes = $finalFree - $initialFreeSpace
@@ -1465,10 +1465,10 @@ try {
     Stop-Transcript
 }
 catch {
-    # No transcript active.
+    # This launch didn't start a transcript.
 }
 
-# Export all functions that are being tested
+# These exports belong to the archived module, not the Gallery entry point.
 Export-ModuleMember -Function @(
     'Test-ValidDrive',
     'Test-ValidPath',
