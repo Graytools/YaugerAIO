@@ -1,4 +1,4 @@
-# Import and metadata checks only; dot-sourcing YaugerAIO.ps1 would actually run maintenance.
+# Check the module without launching it. The main .ps1 starts maintenance as soon as it runs.
 
 BeforeAll {
     $repoRoot = Split-Path -Parent $PSScriptRoot
