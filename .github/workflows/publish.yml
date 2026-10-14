@@ -49,9 +49,9 @@ jobs:
             throw "Unexpected module version $($module.Version); expected 1.5.1."
           }
 
-          $expected = @('YaugerAIO', 'Start-YaugerAIOWorkflow')
-          foreach ($name in $expected) {
-            if ($module.ExportedCommands.Keys -notcontains $name) {
+          $imported = Import-Module -Name (Join-Path $release 'YaugerAIO.psd1') -Force -PassThru -ErrorAction Stop
+          foreach ($name in @('YaugerAIO', 'Start-YaugerAIOWorkflow')) {
+            if ($imported.ExportedFunctions.Keys -notcontains $name) {
               throw "Required command $name was not exported by the release package."
             }
           }
