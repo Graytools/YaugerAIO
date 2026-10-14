@@ -667,46 +667,56 @@ function Invoke-YaugerNativeTask {
 }
 
 # The initial check is quick. Ask before starting the potentially lengthy repair.
+# The initial check can also stall, so it uses the same monitored runner.
 function Run-DISMCheckHealth {
     Write-Host "Checking Windows repair files (DISM /CheckHealth)..." -ForegroundColor Cyan
     try {
-        $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
-        $exitCode = $LASTEXITCODE
-        $status = Get-DISMCheckHealthStatus -Output $dismOutput -ExitCode $exitCode
-        $script:log += "DISM /CheckHealth status: $status (exit code $exitCode)" + [Environment]::NewLine + $dismOutput
-
+        $task = Invoke-YaugerNativeTask -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/CheckHealth') -Label 'DISM health check' -NextStep 'SFC scan'
+        if ($task.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($task.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'Windows repair check' -Status $(if ($task.State -eq 'Skipped') { 'SKIP' } else { 'CHECK' }) -Summary 'DISM health check interrupted by Spacebar; health was not verified.' -Action 'If Windows repairs still appear active, wait for them to settle before retrying.'
+            return
+        }
+        if ($task.State -ne 'Completed') {
+            Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows repair check could not be started or monitored.' -Action 'Check the detailed history in the report.'
+            return
+        }
+        $status = Get-DISMCheckHealthStatus -Output $task.Output -ExitCode $task.ExitCode
+        $script:log += "DISM /CheckHealth interpretation: $status"
         switch ($status) {
             'Healthy' {
                 Add-MaintenanceResult -Name 'Windows repair check' -Status PASS -Summary 'Windows did not report damage to its repair files.'
                 Write-Host "Windows repair files look healthy. Moving on to SFC." -ForegroundColor Green
             }
             'Repairable' {
+                Add-MaintenanceResult -Name 'Windows repair check' -Status WARN -Summary 'Windows found repairable damage.' -Action 'Check the optional repair result below, or rerun YaugerAIO to attempt repair.'
                 Write-Host "Windows found damage it may be able to repair." -ForegroundColor Yellow
                 Write-Host "Try DISM repair now? This can take 20-30 minutes or longer and may need internet access. (Y/N)" -ForegroundColor Yellow
                 $choice = [Console]::ReadKey($true)
                 if ($choice.KeyChar.ToString().ToUpperInvariant() -eq 'Y') {
+                    Record-YaugerChoice 'DISM repair offered: accepted.'
+                    Start-YaugerStep 'DISM RestoreHealth repair'
                     Invoke-DISMRestoreHealth
                 } else {
-                    Add-MaintenanceResult -Name 'Windows repair check' -Status WARN -Summary 'Repairable Windows damage was found. You chose not to run the repair.' -Action 'Run YaugerAIO again and accept Windows repair, or ask a technician for help.'
+                    Record-YaugerChoice 'DISM repair offered: declined; repair skipped.'
+                    Add-MaintenanceResult -Name 'Windows repair' -Status SKIP -Summary 'You chose not to attempt the optional repair.'
                     Write-Host "Windows repair skipped. Continuing with SFC." -ForegroundColor Yellow
                 }
             }
             'NotRepairable' {
-                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows reported damage that this repair command cannot fix.' -Action 'Have a technician review the DISM details and Windows recovery options.'
+                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows reported damage that the built-in repair cannot fix.' -Action 'Have a technician review the DISM details and Windows recovery options.'
                 Write-Host "Windows reports damage that DISM cannot repair automatically." -ForegroundColor Red
             }
             'Failed' {
-                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary "The Windows repair check failed (DISM exit code $exitCode)." -Action 'Check the technical log, then ask a technician to investigate Windows servicing.'
-                Write-Host "The Windows repair check failed. Review the technical log." -ForegroundColor Red
+                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary "The Windows repair check failed (DISM exit code $($task.ExitCode))." -Action 'Review the detailed history and have a technician investigate Windows servicing.'
             }
             default {
-                Add-MaintenanceResult -Name 'Windows repair check' -Status CHECK -Summary 'Windows repair check finished, but its result could not be confirmed.' -Action 'Review the DISM details in the technical log before deciding whether to repair.'
-                Write-Host "DISM returned an unrecognized result. Repair was not started." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair check' -Status CHECK -Summary 'Windows repair check finished, but its result was not understood.' -Action 'Review the captured DISM output before assuming Windows is healthy.'
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'The Windows repair check or repair prompt could not finish.' -Action 'Review the technical log and verify that DISM is available.'
-        Log "DISM /CheckHealth or repair prompt failed: $_" "Red"
+        Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'The Windows repair check or prompt failed.' -Action 'Review the detailed activity in the report.'
+        Log "DISM health check failed: $_" "Red"
     }
     Write-Host ""
 }
@@ -724,43 +734,44 @@ function Get-DISMRepairVerificationStatus {
 }
 
 function Invoke-DISMRestoreHealth {
-    Write-Host "Repairing Windows files with DISM /RestoreHealth. Please leave this window open..." -ForegroundColor Cyan
+    Write-Host "Repairing Windows files with DISM /RestoreHealth..." -ForegroundColor Cyan
     try {
-        $repairLines = @()
-        & dism.exe /Online /Cleanup-Image /RestoreHealth 2>&1 | Tee-Object -Variable repairLines | Out-Host
-        $repairExitCode = $LASTEXITCODE
-        $repairOutput = $repairLines | Out-String
-        $script:log += "DISM /RestoreHealth exit code: $repairExitCode" + [Environment]::NewLine + $repairOutput
-
-        if ($repairExitCode -ne 0) {
-            Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'DISM could not finish the repair.' -Action 'Review the repair details in the technical log. Windows Update or a technician may be needed.'
-            Write-Host "Windows repair failed. Continuing to SFC." -ForegroundColor Red
+        $task = Invoke-YaugerNativeTask -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/RestoreHealth') -Label 'DISM repair' -NextStep 'SFC scan'
+        if ($task.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($task.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'Windows repair' -Status $(if ($task.State -eq 'Skipped') { 'SKIP' } else { 'CHECK' }) -Summary 'DISM repair was interrupted; any repairs are unverified.' -Action 'Allow Windows servicing to finish before attempting repairs again.'
+            return
+        }
+        if ($task.State -ne 'Completed' -or $task.ExitCode -ne 0) {
+            Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'DISM could not finish the repair successfully.' -Action 'Review the captured DISM output and check Windows Update or consult a technician.'
             return
         }
 
         Write-Host "Checking whether Windows now reports its repair files as healthy..." -ForegroundColor Cyan
-        $verifyOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
-        $verifyExitCode = $LASTEXITCODE
-        $checkStatus = Get-DISMCheckHealthStatus -Output $verifyOutput -ExitCode $verifyExitCode
-        $script:log += "DISM post-repair /CheckHealth status: $checkStatus (exit code $verifyExitCode)" + [Environment]::NewLine + $verifyOutput
-
-        $result = Get-DISMRepairVerificationStatus -RepairExitCode $repairExitCode -CheckStatus $checkStatus
+        $verify = Invoke-YaugerNativeTask -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/CheckHealth') -Label 'DISM repair verification' -NextStep 'SFC scan'
+        if ($verify.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($verify.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM repair finished, but you interrupted the follow-up check. Repair was not confirmed.' -Action 'Allow Windows servicing to settle, then check Windows health again.'
+            return
+        }
+        $checkStatus = if ($verify.State -eq 'Completed') {
+            Get-DISMCheckHealthStatus -Output $verify.Output -ExitCode $verify.ExitCode
+        } else { 'Unknown' }
+        $result = Get-DISMRepairVerificationStatus -RepairExitCode $task.ExitCode -CheckStatus $checkStatus
         switch ($result) {
             'Repaired' {
-                Add-MaintenanceResult -Name 'Windows repair' -Status PASS -Summary 'Windows found damage, DISM ran a repair, and a follow-up check reported no remaining damage.'
+                Add-MaintenanceResult -Name 'Windows repair' -Status PASS -Summary 'DISM attempted repair and a second Windows check reported no remaining damage.'
                 Write-Host "Windows reports that the repair worked. SFC will check system files next." -ForegroundColor Green
             }
             'Unresolved' {
-                Add-MaintenanceResult -Name 'Windows repair' -Status WARN -Summary 'DISM finished, but Windows still reports damage.' -Action 'Review the technical log and ask a technician to check Windows servicing or recovery options.'
-                Write-Host "DISM finished, but Windows still reports damage." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair' -Status WARN -Summary 'DISM finished but Windows still reports damage.' -Action 'Review the detailed activity and ask a technician to check Windows servicing.'
             }
             default {
-                Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM finished, but the follow-up check could not confirm the repair.' -Action 'Review the DISM results in the technical log before assuming Windows is repaired.'
-                Write-Host "The repair finished, but YaugerAIO could not confirm the result." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM finished, but Windows could not confirm the repair result.' -Action 'Review the detailed DISM output before assuming Windows is repaired.'
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'The repair or its follow-up check could not finish.' -Action 'Review the technical log and Windows servicing status.'
+        Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'The repair or its follow-up check could not finish.' -Action 'Review the detailed activity in the report.'
         Log "DISM /RestoreHealth could not finish: $_" "Red"
     }
 }
@@ -780,44 +791,42 @@ function Get-SFCScanStatus {
 }
 
 function Run-SFCScan {
-    Write-Host "Executing SFC Scan..." -ForegroundColor Cyan
+    Write-Host "Checking Windows system files with SFC..." -ForegroundColor Cyan
     try {
-        # Show SFC's output as it runs, and keep a copy for the technical log.
-        $sfcLines = @()
-        & sfc.exe /scannow 2>&1 | Tee-Object -Variable sfcLines
-        $exitCode = $LASTEXITCODE
-        $sfcOutput = $sfcLines | Out-String
-        $status = Get-SFCScanStatus -Output $sfcOutput -ExitCode $exitCode
-        $script:log += "SFC /scannow status: $status (exit code $exitCode)`n$sfcOutput`n"
-
+        $task = Invoke-YaugerNativeTask -FilePath 'sfc.exe' -Arguments @('/scannow') -Label 'SFC scan' -NextStep 'Windows Update'
+        if ($task.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($task.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'SFC system files' -Status $(if ($task.State -eq 'Skipped') { 'SKIP' } else { 'CHECK' }) -Summary 'System file scan interrupted by Spacebar; the result is unknown.' -Action 'Windows may have unfinished servicing work. Wait until it settles before retrying.'
+            return
+        }
+        if ($task.State -ne 'Completed') {
+            Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'SFC could not start or be monitored.' -Action 'Review the detailed history in the report.'
+            return
+        }
+        $status = Get-SFCScanStatus -Output $task.Output -ExitCode $task.ExitCode
+        $script:log += "SFC scan interpretation: $status"
         switch ($status) {
             'Healthy' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows Resource Protection found no integrity violations.'
-                Write-Host "SFC found no integrity violations." -ForegroundColor Green
+                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows found no damaged protected system files.'
             }
             'Repaired' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'SFC reports that corrupt system files were repaired.'
-                Write-Host "SFC reports that corrupt system files were repaired." -ForegroundColor Green
+                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows reports that damaged system files were repaired.'
             }
             'Unresolved' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status WARN -Summary 'SFC could not repair some corrupt system files.' -Action 'Review CBS.log and try DISM /RestoreHealth followed by sfc /scannow.'
-                Write-Host "SFC could not repair all corrupt files. Review CBS.log for details." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'SFC system files' -Status WARN -Summary 'Windows could not repair some system files.' -Action 'Review the report details and consider checking Windows repairs again.'
             }
             'Failed' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary "SFC failed or could not finish (exit code $exitCode)." -Action 'Check CBS.log and rerun sfc /scannow from an elevated prompt.'
-                Write-Host "SFC did not complete successfully (exit code $exitCode). Review the output in the log." -ForegroundColor Red
+                Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary "System file scan could not finish (SFC exit code $($task.ExitCode))." -Action 'Review the captured Windows scan output.'
             }
             default {
-                Add-MaintenanceResult -Name 'SFC system files' -Status CHECK -Summary 'SFC completed with unrecognized output.' -Action 'Read the SFC section of the technical log before assuming files are healthy.'
-                Write-Host "SFC completed, but its result was not recognized. Review the output in the log." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'SFC system files' -Status CHECK -Summary 'System file scan finished but its result was not recognized.' -Action 'Review the captured SFC output before assuming all files are healthy.'
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'SFC could not start or process its output.' -Action 'Review the technical log and try SFC in an elevated prompt.'
-        Log "SFC scan could not run: $_" "Red"
+        Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'The system file scan could not finish.' -Action 'Review the detailed activity in the report.'
+        Log "SFC scan could not finish: $_" "Red"
     }
 }
-
 
 # Cleanup tasks
 function Clear-BrowserCaches {
