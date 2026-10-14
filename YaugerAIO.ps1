@@ -1050,8 +1050,8 @@ Write-Host "- Check RAM usage." -ForegroundColor White
 Write-Host "- Check GPU driver(s) and version(s)." -ForegroundColor White
 Write-Host "- Log system uptime." -ForegroundColor White
 Write-Host "- Clear browser caches. (Chrome, Edge, Brave, Opera, Firefox)" -ForegroundColor White
-Write-Host "- DISM Scan for Component Store Corruption." -ForegroundColor White
-Write-Host "- SFC Scan to find and fix Windows System Files." -ForegroundColor White
+Write-Host "- Check Windows repair files; offer an optional repair if damage is found." -ForegroundColor White
+Write-Host "- Scan protected Windows files and repair what Windows can." -ForegroundColor White
 Write-Host "- Check for and install Windows Updates." -ForegroundColor White
 Write-Host "" -ForegroundColor White
 
@@ -1062,22 +1062,27 @@ Write-Host "Please close all applications and browsers for a clean, smooth Cache
 Start-Sleep -Seconds 2
 Write-Host "Please press Enter to begin." -ForegroundColor Yellow
 [void][System.Console]::ReadKey($true)
+Record-YaugerChoice 'Started maintenance after the initial confirmation.'
 Write-Host ""
 
 # Disk Cleanup (optional)
+Start-YaugerStep 'Disk Cleanup'
 Write-Host "Would you like to run Disk Cleanup? (Y/N)" -ForegroundColor Yellow
 $key = [Console]::ReadKey($true)
 if ($key.KeyChar.ToString().ToUpper() -eq "Y") {
     $script:runDiskCleanup = $true
+    Record-YaugerChoice 'Disk Cleanup: accepted.'
     Log "✔ User has opted to run Disk Cleanup." "Yellow"
     Run-CleanMgr
 } else {
+    Record-YaugerChoice 'Disk Cleanup: declined.'
     Add-MaintenanceResult -Name 'Disk Cleanup' -Status SKIP -Summary 'Skipped at user request.'
     Log "✖ User has opted not to run Disk Cleanup." "Yellow"
 }
 Write-Host ""
 
 # Windows Temp cleanup (optional)
+Start-YaugerStep 'Windows temporary-file cleanup'
 $tempSize = Get-WindowsTempSize
 if ($tempSize -gt 0) {
     if ($tempSize -gt 1000) {
@@ -1090,6 +1095,7 @@ if ($tempSize -gt 0) {
     Write-Host ""
     $tempChoice = [Console]::ReadKey($true)
     if ($tempChoice.KeyChar.ToString().ToUpper() -eq "Y") {
+        Record-YaugerChoice "Windows Temp cleanup: accepted. About $displaySize measured before cleanup."
         # Offer to close apps that may be holding temp files open.
         $tempLockingApps = Get-TempLockingProcesses
         if ($tempLockingApps.Count -gt 0) {
@@ -1101,23 +1107,34 @@ if ($tempSize -gt 0) {
             Write-Host "Would you like to automatically close these applications before clearing temp files? (Y/N)" -ForegroundColor Yellow
             $retryKey = [Console]::ReadKey($true)
             if ($retryKey.KeyChar.ToString().ToUpper() -eq "Y") {
+                Record-YaugerChoice 'Close running applications that may lock temporary files: accepted.'
                 foreach ($app in $tempLockingApps) {
                     Write-Host "Closing $($app.FriendlyName)..." -ForegroundColor Cyan
-                    Get-Process | Where-Object { $_.ProcessName.ToLower() -eq $app.ProcessName } | Stop-Process -Force -ErrorAction SilentlyContinue
+                    try {
+                        Get-Process | Where-Object { $_.ProcessName.ToLower() -eq $app.ProcessName } | Stop-Process -Force -ErrorAction Stop
+                        $script:log += "Requested application closure: $($app.FriendlyName)"
+                    } catch {
+                        Log "Could not close $($app.FriendlyName): $_" 'Yellow'
+                    }
                 }
                 Start-Sleep -Seconds 2
             } else {
+                Record-YaugerChoice 'Close running applications that may lock temporary files: declined.'
                 Log "✖ User chose not to close running applications. Proceeding to clear available temp files." "Yellow"
             }
         }
         Clear-WindowsTemp
+        $afterTempSize = Get-WindowsTempSize
+        $tempDifference = [math]::Round(($tempSize - $afterTempSize), 2)
+        $tempChangeText = "TEMP contained about $tempSize MB before and $afterTempSize MB after; change $tempDifference MB (estimate)."
+        $script:log += $tempChangeText
         switch ($script:tempCleanupOutcome) {
             'PASS' {
-                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status PASS -Summary 'Attempted cleanup completed with no reported file deletion errors.'
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status PASS -Summary "Cleanup reported no deletion errors. $tempChangeText"
                 Log "✔ Windows Temp cleanup completed." "Cyan"
             }
             'WARN' {
-                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status WARN -Summary 'Some temp files or links were skipped.' -Action 'Close apps using temporary files and retry if storage remains low.'
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status WARN -Summary "Some temp files or links were skipped. $tempChangeText" -Action 'Close apps using temporary files and retry if storage remains low.'
                 Log "Windows Temp cleanup was only partially completed." "Yellow"
             }
             'SKIP' {
@@ -1129,31 +1146,39 @@ if ($tempSize -gt 0) {
             }
         }
     } else {
+        Record-YaugerChoice "Windows Temp cleanup: declined (about $displaySize available)."
         Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'User declined temporary-file cleanup.'
         Log "✖ User chose not to clear Windows Temp files." "Yellow"
     }
 } else {
+    Record-YaugerChoice 'Windows Temp cleanup: not offered because no removable size was measured.'
     Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'No removable TEMP file size was measured, or the directory was unavailable.'
     Log "No Windows Temp files were measured for cleanup." "Cyan"
 }
 Write-Host ""
 
 # Check free disk space.
+Start-YaugerStep 'Disk space'
 Check-DiskSpace
 # Sample CPU usage.
+Start-YaugerStep 'CPU usage'
 Check-CPUUsage
 # Flush the DNS resolver cache.
+Start-YaugerStep 'DNS cache flush'
 Flush-DNSCache
 # Sample memory usage.
+Start-YaugerStep 'Memory usage'
 Check-RAMUsage
 
 
 Write-Host ""
 
 # Check the installed graphics drivers.
+Start-YaugerStep 'Graphics drivers'
 Check-GPUDrivers
 Write-Host ""  # Blank line between GPU and System Uptime
 # Check how long Windows has been running.
+Start-YaugerStep 'Windows uptime'
 Check-SystemUptime
 Write-Host ""  # Blank line between uptime alerts and Cache Smash
 
@@ -1171,6 +1196,7 @@ Write-Host ""
 Start-Sleep -Seconds 2
 
 # Try to clear browser caches.
+Start-YaugerStep 'Browser cache cleanup'
 Clear-BrowserCaches
 
 # Explain the DISM check before it starts.
@@ -1181,19 +1207,30 @@ Start-Sleep -Seconds 3
 Write-Host ""
 
 # Check component store health with DISM.
+Start-YaugerStep 'DISM health check'
 Run-DISMCheckHealth
 
 Write-Host ""  
 
 # Run the Windows system file check.
-Run-SFCScan
+if ($script:servicingStopUnconfirmed) {
+    Add-MaintenanceResult -Name 'SFC system files' -Status SKIP -Summary 'Skipped for safety because a previous DISM process may still be running.'
+} else {
+    Start-YaugerStep 'SFC system file scan'
+    Run-SFCScan
+}
 
 Write-Host ""  
 
 # Check Windows Update and attempt installation.
-Install-WindowsUpdates
+if ($script:servicingStopUnconfirmed) {
+    Add-MaintenanceResult -Name 'Windows Update' -Status SKIP -Summary 'Skipped for safety because a Windows servicing process could not be confirmed stopped.'
+} else {
+    Start-YaugerStep 'Windows Update'
+    Install-WindowsUpdates
+}
 
-# Write both reports after the last maintenance step.
+# Write one report after the last maintenance step.
 Write-Host ""
 $spaceChangeFormatted = 'Not measured'
 try {
@@ -1222,20 +1259,11 @@ Log ("Total script runtime: " + ($finishedAt - $script:StartTime).ToString()) "C
 Log "=============================================" "Cyan"
 Log "YaugerAIO maintenance workflow completed." "Blue"
 
-$technicalFileName = "YaugerAIO_Technical_$timestamp.txt"
-$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceChangeFormatted -RestartRequired $script:needsRestart -TechnicalFile $technicalFileName
-$technicalText = @(
-    'YaugerAIO | Technical Diagnostic Log',
-    ('Computer: ' + $env:COMPUTERNAME),
-    ('Started: ' + $script:StartTime.ToString('yyyy-MM-dd HH:mm:ss')),
-    'For a summary and recommended actions, open the accompanying YaugerAIO_Report file.',
-    '============================================================'
-) + $script:log
+$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceChangeFormatted -RestartRequired $script:needsRestart -Choices $script:choices -Details $script:log
 try {
-    $savedFiles = Save-YaugerMaintenanceReport -ReportText $reportText -TechnicalText ($technicalText -join [Environment]::NewLine) -Timestamp $timestamp
+    $reportPath = Save-YaugerMaintenanceReport -ReportText $reportText -Timestamp $timestamp
     Write-Host ""
-    Write-Host "Readable maintenance report: $($savedFiles.ReportPath)" -ForegroundColor Green
-    Write-Host "Recorded technical details:   $($savedFiles.TechnicalPath)" -ForegroundColor Cyan
+    Write-Host "Your complete maintenance report: $reportPath" -ForegroundColor Green
 } catch {
     Write-Host "Unable to save maintenance report: $_" -ForegroundColor Red
 }
