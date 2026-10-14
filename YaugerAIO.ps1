@@ -1,5 +1,5 @@
 ﻿<#PSScriptInfo
-.VERSION 1.2.2
+.VERSION 1.5.1
 .GUID ed3b18c9-b76d-4ba2-b3b4-59b1bf8e2113
 .AUTHOR Rick Yauger
 .COMPANYNAME SoHo Integration, LLC
@@ -8,7 +8,7 @@
 .LICENSEURI https://opensource.org/licenses/MIT
 .PROJECTURI https://github.com/Graytools/YaugerAIO
 .RELEASENOTES
-Initial release to PowerShell Gallery.
+Guided Windows maintenance with updated cleanup checks, automatic elevation, and readable reports.
 #>
 
 # Ask Windows for admin rights before doing anything with the console.
