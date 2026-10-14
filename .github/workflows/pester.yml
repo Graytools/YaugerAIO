@@ -16,7 +16,7 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Pester 5
         shell: powershell
@@ -27,14 +27,14 @@ jobs:
         shell: powershell
         run: |
           Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop
-          Invoke-Pester -Path ./Tests/YaugerAIO.Smoke.Tests.ps1 -Output Detailed
+          Invoke-Pester -Path ./Tests -Output Detailed
 
   powershell-7:
     name: PowerShell 7
     runs-on: windows-latest
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install Pester 5
         shell: pwsh
@@ -45,4 +45,4 @@ jobs:
         shell: pwsh
         run: |
           Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop
-          Invoke-Pester -Path ./Tests/YaugerAIO.Smoke.Tests.ps1 -Output Detailed
+          Invoke-Pester -Path ./Tests -Output Detailed
