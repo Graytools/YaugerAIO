@@ -39,12 +39,21 @@ Describe 'YaugerAIO readable reporting' {
         $report | Should -Match '2. \[FAIL\] SFC'
         $report | Should -Match '3. \[CHECK\] Browser cache'
         $report | Should -Match 'CHECK RESULTS'
-        $report | Should -Match '1 passed \| 1 warnings \| 1 failed \| 1 unverified \| 1 skipped'
+        $report | Should -Match 'Passed: 1 \| Warnings: 1 \| Failed: 1 \| Unverified: 1 \| Skipped: 1'
         $report | Should -Match 'Run DISM RestoreHealth'
         $report | Should -Match 'YaugerAIO_Technical_test.txt'
         $actionsPosition = $report.IndexOf('WHAT TO DO NEXT')
         $resultsPosition = $report.IndexOf('CHECK RESULTS')
         $actionsPosition | Should -BeLessThan $resultsPosition
+    }
+
+    It 'explains the overall result and shows a loss of free space clearly' {
+        $results = @(
+            [PSCustomObject]@{ Name = 'Windows repair'; Status = 'WARN'; Summary = 'Windows still reports damage.'; Action = 'Ask a technician for help.' }
+        )
+        $report = Format-YaugerMaintenanceReport -Results $results -StartedAt $startedAt -FinishedAt $finishedAt -SpaceFreed '250 MB less free'
+        $report | Should -Match 'Overall: Some things still need attention'
+        $report | Should -Match 'Change in available disk space: 250 MB less free'
     }
 
     It 'reports a required restart as a next step' {
@@ -56,7 +65,7 @@ Describe 'YaugerAIO readable reporting' {
     It 'does not invent successful checks when none were recorded' {
         $report = Format-YaugerMaintenanceReport -Results @() -StartedAt $startedAt -FinishedAt $finishedAt
         $report | Should -Match 'No maintenance results were recorded'
-        $report | Should -Match '0 passed \| 0 warnings \| 0 failed \| 0 unverified \| 0 skipped'
+        $report | Should -Match 'Passed: 0 \| Warnings: 0 \| Failed: 0 \| Unverified: 0 \| Skipped: 0'
     }
 
     It 'keeps multiline technical content out of the concise report' {
