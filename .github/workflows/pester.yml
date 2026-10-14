@@ -1,0 +1,39 @@
+name: YaugerAIO Windows smoke tests
+
+on:
+  push:
+    branches:
+      - fix/psgallery-1.5.1
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pester:
+    name: ${{ matrix.label }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Windows PowerShell 5.1
+            shell: powershell
+          - label: PowerShell 7
+            shell: pwsh
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Pester 5
+        shell: ${{ matrix.shell }}
+        run: |
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
+
+      - name: Run safe module smoke tests
+        shell: ${{ matrix.shell }}
+        run: |
+          Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop
+          Invoke-Pester -Path ./Tests/YaugerAIO.Smoke.Tests.ps1 -Output Detailed
