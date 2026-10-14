@@ -48,9 +48,10 @@ Describe 'Native scan progress and skipping' {
         $script:log -join "`n" | Should -Match 'process stopped: True'
     }
 
-    It 'returns Failed instead of hanging if the executable cannot start' {
+    It 'records a command-not-found error without calling it a successful scan' {
         $result = Invoke-YaugerNativeTask -FilePath 'YaugerAIO_no_such_executable.exe' -Arguments @('/x') -Label 'Missing test' -NextStep 'Next check' -SkipRequested { $false }
-        $result.State | Should -Be 'Failed'
-        $script:log -join "`n" | Should -Match 'could not run or monitor'
+        $result.State | Should -Be 'Completed'
+        $result.ExitCode | Should -Not -Be 0
+        $script:log -join "`n" | Should -Match 'exit code:'
     }
 }
