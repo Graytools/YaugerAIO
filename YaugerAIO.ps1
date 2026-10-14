@@ -641,7 +641,17 @@ function Invoke-YaugerNativeTask {
     Write-Host "$Label can sometimes pause while Windows works. The percentage may not change for a while." -ForegroundColor Yellow
     Write-Host "Press SPACE to stop this task and continue to $NextStep. Stopping a repair may leave work unfinished." -ForegroundColor Yellow
     try {
-        $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -NoNewWindow -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile -ErrorAction Stop
+        # Start the command under cmd so Windows can write its output to a file while we watch it.
+        # This also gives us a reliable exit code on both older and newer PowerShell versions.
+        $commandText = $FilePath + ' ' + ($Arguments -join ' ') + ' 1>"' + $outFile + '" 2>"' + $errFile + '"'
+        $startup = New-Object System.Diagnostics.ProcessStartInfo
+        $startup.FileName = 'cmd.exe'
+        $startup.Arguments = '/D /S /C "' + $commandText + '"'
+        $startup.UseShellExecute = $false
+        $startup.CreateNoWindow = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startup
+        if (-not $process.Start()) { throw "Windows could not start $FilePath" }
         $state = 'Completed'
         $lastDisplay = ''
         do {
