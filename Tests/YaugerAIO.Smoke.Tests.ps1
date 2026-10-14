@@ -62,6 +62,12 @@ Describe 'YaugerAIO release smoke tests' {
         }
     }
 
+    It 'launches maintenance in a separate elevated Windows PowerShell process with process-scoped execution policy' {
+        $moduleSource = Get-Content -LiteralPath $modulePath -Raw
+        $moduleSource | Should -Match "Start-Process -FilePath 'powershell.exe' -Verb RunAs"
+        $moduleSource | Should -Match "'-ExecutionPolicy', 'Bypass'"
+    }
+
     It 'refuses to run Windows maintenance on a non-Windows system' -Skip:($env:OS -eq 'Windows_NT') {
         Import-Module -Name $manifestPath -Force -ErrorAction Stop
         { Start-YaugerAIOWorkflow } | Should -Throw '*requires Windows*'
