@@ -1,7 +1,7 @@
 @{
     RootModule = 'YaugerAIO.psm1'
 
-    ModuleVersion = '1.5.2'
+    ModuleVersion = '1.5.3'
 
     GUID = '61202a7e-012b-4a64-888e-5dbacee33014'
 
@@ -31,7 +31,7 @@
 
             ProjectUri = 'https://github.com/Graytools/YaugerAIO'
 
-            ReleaseNotes = 'Adds opt-in DISM RestoreHealth for repairable damage with a follow-up health check; clarifies browser cache status and maintenance reports.'
+            ReleaseNotes = 'Adds live DISM and SFC progress, Spacebar skip, complete step tracking and a single readable desktop report with diagnostics.'
         }
     }
 } 
