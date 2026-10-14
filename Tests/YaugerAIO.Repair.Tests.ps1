@@ -9,7 +9,7 @@ BeforeAll {
     )
     if ($parseErrors) { throw 'Cannot test repair status parsing while the script has syntax errors.' }
 
-    foreach ($functionName in @('Get-DISMCheckHealthStatus', 'Get-SFCScanStatus')) {
+    foreach ($functionName in @('Get-DISMCheckHealthStatus', 'Get-DISMRepairVerificationStatus', 'Get-SFCScanStatus')) {
         $functionAst = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -44,6 +44,47 @@ Describe 'DISM /CheckHealth status classification' {
     It 'does not invent a healthy status for unrecognized output' {
         Get-DISMCheckHealthStatus -Output 'Unknown status text' -ExitCode 0 |
             Should -Be 'Unknown'
+    }
+}
+
+Describe 'DISM repair confirmation' {
+    It 'confirms repair only when DISM exits successfully and the follow-up check reports healthy' {
+        Get-DISMRepairVerificationStatus -RepairExitCode 0 -CheckStatus 'Healthy' |
+            Should -Be 'Repaired'
+    }
+
+    It 'does not report a successful repair after a failed DISM operation' {
+        Get-DISMRepairVerificationStatus -RepairExitCode 87 -CheckStatus 'Healthy' |
+            Should -Be 'Failed'
+    }
+
+    It 'warns when Windows still reports repairable damage afterward' {
+        Get-DISMRepairVerificationStatus -RepairExitCode 0 -CheckStatus 'Repairable' |
+            Should -Be 'Unresolved'
+    }
+
+    It 'warns when Windows reports the damage cannot be repaired' {
+        Get-DISMRepairVerificationStatus -RepairExitCode 0 -CheckStatus 'NotRepairable' |
+            Should -Be 'Unresolved'
+    }
+
+    It 'does not claim the repair worked if the follow-up check failed or was unrecognized' {
+        Get-DISMRepairVerificationStatus -RepairExitCode 0 -CheckStatus 'Failed' |
+            Should -Be 'Unverified'
+        Get-DISMRepairVerificationStatus -RepairExitCode 0 -CheckStatus 'Unknown' |
+            Should -Be 'Unverified'
+    }
+
+    It 'prompts before repair and keeps the operation behind the repairable-result case' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
+        $runner = $ast.Find({
+            param($n)
+            $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Run-DISMCheckHealth'
+        }, $true)
+        $source = $runner.Extent.Text
+        $source | Should -Match "'Repairable'[\s\S]*\[Console\]::ReadKey"
+        $source | Should -Match "if \(\$choice\.KeyChar"
+        $source | Should -Match 'Invoke-DISMRestoreHealth'
     }
 }
 
