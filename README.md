@@ -4,7 +4,7 @@ YaugerAIO is a Windows maintenance tool I wrote in PowerShell. It checks some co
 
 You don't need to know PowerShell to use it. Open a terminal, enter the commands below, and follow the prompts.
 
-**Latest release: 1.5.2** — [Get it from PowerShell Gallery](https://www.powershellgallery.com/packages/YaugerAIO/1.5.2).
+**Latest release: 1.5.3** — [Get it from PowerShell Gallery](https://www.powershellgallery.com/packages/YaugerAIO/1.5.3).
 
 ## Install and run
 
@@ -72,20 +72,19 @@ Windows will ask for administrator approval when the tool starts. If your Window
 - **Uptime:** Reports how long Windows has been running since its last restart.
 - **DNS cache:** Flushes Windows' local DNS resolver cache.
 - **Browser caches:** Tries to clear cached files from supported browsers. Some files may be in use or belong to other browser profiles.
-- **DISM:** Checks Windows repair files for damage. If damage is repairable, YaugerAIO asks whether to run `DISM /RestoreHealth`, then checks whether Windows reports the problem fixed. Repairs are optional and may take a while.
-- **SFC:** Runs `sfc /scannow` to check protected Windows system files and repair what Windows can.
+- **DISM:** Checks Windows repair files for damage. If damage is repairable, asks before attempting `DISM /RestoreHealth`, then checks whether Windows reports the repair worked. A visible elapsed-time display stays on screen while each operation runs.
+- **SFC:** Checks protected Windows system files and repairs what Windows can. Shows elapsed time and any percentage Windows reports.
 - **Windows Update:** Looks for applicable software updates, downloads them, and attempts installation. If the update service reports a failure or incomplete result, the report should flag that instead of claiming everything succeeded.
 
-The program takes you through these jobs in order. Some steps can take several minutes, especially SFC and Windows Update.
+The program takes you through these jobs in order. DISM and SFC can be slow or appear stuck because Windows controls their progress. While they run, YaugerAIO shows an elapsed timer and a percentage *only when Windows actually reports one*. Press **Spacebar** to interrupt the current DISM or SFC command and move to the next maintenance task. This stops the launched process, but Windows servicing components may keep working briefly; do not assume an interrupted repair succeeded. If a process cannot be confirmed stopped, YaugerAIO skips the remaining servicing tasks for safety. Windows Update is a separate operation and does not have a Spacebar skip.
 
 ## Where are my results?
 
-At the end of the run, YaugerAIO prints the locations of two text files:
+At the end, YaugerAIO saves **one complete text report**: **`YaugerAIO_Report_<timestamp>.txt`**. It begins with a simple summary, overall duration, approximate change in available drive space, next steps, every option you selected, and each check's result and approximate duration. The lower section contains the detailed activity and Windows command output if you need to troubleshoot. Skipped and interrupted scans are recorded as skipped or unverified, never successful.
 
-- **`YaugerAIO_Report_<timestamp>.txt`** — Start here. It tells you what succeeded, what failed, what was skipped, and what still needs attention.
-- **`YaugerAIO_Technical_<timestamp>.txt`** — More detailed messages and command output, useful when something doesn't work.
+The drive-space change is a before-and-after estimate. Other activity or Windows Updates can affect it; the report does not pretend that all of it was cleared by this program. Temporary-file cleanup also records approximate TEMP size before and after.
 
-The tool tries to save both files on the Desktop. If it can't, it tries Documents and then the temporary folder. Read the file locations shown in the console so you know where they ended up.
+The tool tries to save the report on the Desktop. If it can't, it tries Documents and then the temporary folder. Read the file locations shown in the console so you know where they ended up.
 
 The report uses these labels:
 
