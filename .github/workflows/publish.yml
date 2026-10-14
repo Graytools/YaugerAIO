@@ -1,84 +1,69 @@
-name: Publish to PowerShell Gallery
+name: Publish YaugerAIO to PowerShell Gallery
 
 on:
-  push:
-    branches:
-      - main
-    tags:
-      - 'v*'
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Enter PUBLISH to release version 1.5.1 from the repair branch"
+        required: true
+        type: string
+
+permissions:
+  contents: read
 
 jobs:
   publish:
+    if: github.ref == 'refs/heads/fix/psgallery-1.5.1' && inputs.confirm == 'PUBLISH'
     runs-on: windows-latest
+
     steps:
-      - uses: actions/checkout@v3
+      - name: Check out the selected commit
+        uses: actions/checkout@v5
 
       - name: Install Pester
         shell: pwsh
         run: |
-          Install-Module -Name Pester -Force -SkipPublisherCheck
+          Install-Module Pester -RequiredVersion 5.7.1 -Scope CurrentUser -Force -SkipPublisherCheck -ErrorAction Stop
 
-      - name: Run Tests
+      - name: Run maintenance and module tests
         shell: pwsh
         run: |
-          $testResults = Invoke-Pester -Path .\YaugerAIO.tests.ps1 -Output Detailed -PassThru
-          if ($testResults.FailedCount -gt 0) {
-            throw "Tests failed. Please check the test results."
+          Import-Module Pester -RequiredVersion 5.7.1 -Force -ErrorAction Stop
+          $result = Invoke-Pester -Path ./Tests -Output Detailed -PassThru
+          if ($result.FailedCount -gt 0 -or $result.TotalCount -eq 0) {
+            throw "Pester failed or did not discover any tests."
           }
 
-      - name: Install PowerShell Gallery Tools
+      - name: Build the PowerShell Gallery package
         shell: pwsh
         run: |
-          Install-Module -Name PowerShellGet -Force -SkipPublisherCheck
-          Install-Module -Name PSGalleryTools -Force -SkipPublisherCheck
+          $release = Join-Path $PWD 'release/YaugerAIO'
+          New-Item -Path $release -ItemType Directory -Force | Out-Null
 
-      - name: Update Module Version
-        shell: pwsh
-        run: |
-          $manifestPath = ".\YaugerAIO.psd1"
-          $manifest = Import-PowerShellDataFile $manifestPath
-          $version = $manifest.ModuleVersion
-          
-          # If this is a tag push, use the tag version
-          if ($env:GITHUB_REF.StartsWith('refs/tags/v')) {
-            $version = $env:GITHUB_REF.Replace('refs/tags/v', '')
+          foreach ($file in @('YaugerAIO.psd1', 'YaugerAIO.psm1', 'YaugerAIO.ps1', 'README.md', 'LICENSE')) {
+            Copy-Item -LiteralPath (Join-Path $PWD $file) -Destination $release -ErrorAction Stop
           }
-          
-          # Update the manifest version
-          $content = Get-Content $manifestPath -Raw
-          $content = $content -replace "ModuleVersion = '.*'", "ModuleVersion = '$version'"
-          Set-Content -Path $manifestPath -Value $content
 
-      - name: Publish to PowerShell Gallery
+          $module = Test-ModuleManifest -Path (Join-Path $release 'YaugerAIO.psd1') -ErrorAction Stop
+          if ($module.Version.ToString() -ne '1.5.1') {
+            throw "Unexpected module version $($module.Version); expected 1.5.1."
+          }
+
+          $expected = @('YaugerAIO', 'Start-YaugerAIOWorkflow')
+          foreach ($name in $expected) {
+            if ($module.ExportedCommands.Keys -notcontains $name) {
+              throw "Required command $name was not exported by the release package."
+            }
+          }
+
+      - name: Publish version 1.5.1
         shell: pwsh
         env:
           PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
         run: |
-          $publishParams = @{
-            Path = "."
-            NuGetApiKey = $env:PSGALLERY_API_KEY
-            Repository = "PSGallery"
-            Force = $true
+          if ([string]::IsNullOrWhiteSpace($env:PSGALLERY_API_KEY)) {
+            throw "The PSGALLERY_API_KEY GitHub Actions secret is not configured."
           }
-          
-          Publish-Module @publishParams
 
-      - name: Create Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          name: Release ${{ github.ref_name }}
-          body: |
-            ## Changes in this release
-            
-            - Initial release of YaugerAIO
-            - Comprehensive system maintenance and optimization tools
-            - Enhanced error handling and performance monitoring
-            - Threaded operations for better performance
-            
-            For detailed information, please visit the [project page](https://github.com/yourGraytools/YaugerAIO).
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+          $release = Join-Path $PWD 'release/YaugerAIO'
+          Publish-Module -Path $release -Repository PSGallery -NuGetApiKey $env:PSGALLERY_API_KEY -ErrorAction Stop
