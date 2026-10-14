@@ -16,7 +16,7 @@ function Start-YaugerAIOWorkflow {
 
     # The original workflow performs privileged Windows maintenance.
     # Launch it only on explicit request, in a separate elevated console.
-    $arguments = @('-NoProfile', '-NoExit', '-File', ('"{0}"' -f $scriptPath))
+    $arguments = @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $scriptPath))
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -ErrorAction Stop
 }
 
