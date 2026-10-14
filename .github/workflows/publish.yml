@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       confirm:
-        description: "Enter PUBLISH to publish version 1.5.2 from main"
+        description: "Enter PUBLISH to publish version 1.5.3 from main"
         required: true
         type: string
 
@@ -45,8 +45,8 @@ jobs:
           }
 
           $module = Test-ModuleManifest -Path (Join-Path $release 'YaugerAIO.psd1') -ErrorAction Stop
-          if ($module.Version.ToString() -ne '1.5.2') {
-            throw "Unexpected module version $($module.Version); expected 1.5.2."
+          if ($module.Version.ToString() -ne '1.5.3') {
+            throw "Unexpected module version $($module.Version); expected 1.5.3."
           }
 
           $imported = Import-Module -Name (Join-Path $release 'YaugerAIO.psd1') -Force -PassThru -ErrorAction Stop
@@ -56,7 +56,7 @@ jobs:
             }
           }
 
-      - name: Publish version 1.5.2
+      - name: Publish version 1.5.3
         shell: pwsh
         env:
           PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}

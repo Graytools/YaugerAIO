@@ -1,4 +1,4 @@
-# Loading the module only registers commands. Maintenance starts when the user runs one.
+# Installing or importing the module shouldn't start cleaning anything. It just adds the YaugerAIO command.
 
 function Start-YaugerAIOWorkflow {
     [CmdletBinding()]
@@ -13,7 +13,7 @@ function Start-YaugerAIOWorkflow {
         throw "Maintenance script was not found: $scriptPath"
     }
 
-    # Open a separate elevated console so the prompts and results remain visible.
+    # Run maintenance in its own admin window. That way the prompts and final report location stay visible.
     $arguments = @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $scriptPath))
     Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -ErrorAction Stop
 }

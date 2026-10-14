@@ -1,5 +1,5 @@
 ﻿<#PSScriptInfo
-.VERSION 1.5.2
+.VERSION 1.5.3
 .GUID ed3b18c9-b76d-4ba2-b3b4-59b1bf8e2113
 .AUTHOR Rick Yauger
 .COMPANYNAME SoHo Integration, LLC
@@ -8,11 +8,10 @@
 .LICENSEURI https://opensource.org/licenses/MIT
 .PROJECTURI https://github.com/Graytools/YaugerAIO
 .RELEASENOTES
-Guided Windows maintenance with optional DISM repairs, automatic elevation, and readable reports.
+Guided Windows maintenance with live DISM and SFC progress, Spacebar skip and one complete report.
 #>
 
-# Ask Windows for admin rights before doing anything with the console.
-# This handles launches from a regular CMD or PowerShell window.
+# If someone starts this from a regular terminal, ask Windows for admin approval before doing anything else.
 if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     $psCmd = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
     $scriptPath = $PSCommandPath
@@ -21,7 +20,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
         return
     }
 
-    # Leave the new console open so the user can read the results.
+    # Don't close the elevated window at the end; the user may want to read what happened.
     $quotedScriptPath = '"' + $scriptPath + '"'
     try {
         Start-Process -FilePath $psCmd -Verb RunAs -ArgumentList @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $quotedScriptPath) -ErrorAction Stop
@@ -31,7 +30,7 @@ if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdent
     return
 }
 
-# Windows Terminal and some console hosts won't honor resize requests.
+# A bigger window helps, but some terminals ignore resize requests. That's fine.
 try {
     $desiredWidth = 130
     $desiredHeight = 50
@@ -40,23 +39,23 @@ try {
 } catch {
 }
 
-# Keep the current runspace available to the console helpers.
+# Some of the original screen helpers expect to find the active PowerShell session here.
 $global:myRunspace = [runspace]::DefaultRunspace
 [runspace]::DefaultRunspace = $global:myRunspace
 
-# Next-step labels used by the original servicing flow.
+# These names are what we tell someone they'll be doing after a scan.
 $script:NextStepFor = @{
     'DISM' = 'SFC Scan'
     'SFC'  = 'Windows Updates'
 }
 
-$DebugDism = $false  # Set to $true for extra DISM debug output
+$DebugDism = $false  # Change this to $true if we're troubleshooting DISM output.
 
-# Scan notes shared across the workflow.
+# Hold on to the scan summaries until the end of the run.
 $global:DISMSummary = ""
 $global:SFCSummary  = ""
 
-# Bring the new console to the front when possible.
+# Try to bring the maintenance window forward so the prompts aren't hidden.
 function Focus-Console {
     Add-Type @"
 using System;
@@ -70,7 +69,7 @@ public class Win32 {
     [Win32]::SetForegroundWindow($hwnd) | Out-Null
 }
 
-# Running applications can hold temp files open.
+# Browsers and other open programs can keep their temporary files locked.
 function Get-TempLockingProcesses {
     $commonAppsMapping = @{
          "chrome"              = "Google Chrome"
@@ -120,7 +119,7 @@ function Get-TempLockingProcesses {
     return $result | Sort-Object FriendlyName -Unique
 }
 
-# Prefer the Windows system drive when checking free space.
+# Check the drive Windows is actually installed on, not just the first drive listed.
 $selectedDrive = $env:SystemDrive
 if (-not $selectedDrive -or -not ($selectedDrive -match "^[A-Z]:$")) {
     Write-Host "SystemDrive environment variable is not set or invalid. Determining primary drive..." -ForegroundColor Yellow
@@ -130,7 +129,7 @@ if (-not $selectedDrive -or -not ($selectedDrive -match "^[A-Z]:$")) {
     Write-Host "System drive: ${selectedDrive}" -ForegroundColor White
 }
 
-# Compare free space before and after. Other disk activity can affect this estimate.
+# This is a before-and-after drive measurement. Windows can use space during the run too.
 $initialFreeSpace = (Get-PSDrive -Name $selectedDrive.Substring(0,1)).Free
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process -Force
@@ -142,14 +141,30 @@ $script:maintenanceResults = @()
 $script:foundAndFixedCorruption = $false
 $script:runDiskCleanup = $false
 $script:needsRestart = $false
+$script:choices = @()
+$script:stepStartedAt = $null
+$script:servicingStopUnconfirmed = $false
 
 function Log {
     param([string]$message, [string]$color = "Cyan")
-    $script:log += $message
+    $script:log += ('[{0:HH:mm:ss}] {1}' -f (Get-Date), $message)
     Write-Host $message -ForegroundColor $color
 }
 
-# Store short outcomes separately from the detailed console messages.
+function Start-YaugerStep {
+    param([string]$Name)
+    $script:stepStartedAt = Get-Date
+    $script:log += ('[{0:HH:mm:ss}] START {1}' -f $script:stepStartedAt, $Name)
+}
+
+function Record-YaugerChoice {
+    param([string]$Description)
+    $entry = ('{0:HH:mm:ss} - {1}' -f (Get-Date), $Description)
+    $script:choices += $entry
+    $script:log += "CHOICE $entry"
+}
+
+# Keep a result for each check, even when someone skips it or Windows can't confirm it.
 function Add-MaintenanceResult {
     param(
         [Parameter(Mandatory = $true)][string]$Name,
@@ -157,15 +172,21 @@ function Add-MaintenanceResult {
         [Parameter(Mandatory = $true)][string]$Summary,
         [string]$Action = ''
     )
+    $seconds = if ($null -ne $script:stepStartedAt) {
+        [math]::Round(((Get-Date) - $script:stepStartedAt).TotalSeconds, 1)
+    } else { $null }
     $script:maintenanceResults += [PSCustomObject]@{
-        Name    = $Name
-        Status  = $Status
+        Name = $Name
+        Status = $Status
         Summary = $Summary
-        Action  = $Action
+        Action = $Action
+        DurationSeconds = $seconds
     }
+    $script:log += ('[{0:HH:mm:ss}] RESULT [{1}] {2} - {3} (step elapsed: {4} sec)' -f (Get-Date), $Status, $Name, $Summary, $seconds)
+    if ($Action) { $script:log += "FOLLOW-UP $Name - $Action" }
 }
 
-# Build the report from results collected during the run.
+# Put the stuff a normal user needs at the top and the longer command output at the bottom.
 function Format-YaugerMaintenanceReport {
     param(
         [object[]]$Results = @(),
@@ -175,18 +196,20 @@ function Format-YaugerMaintenanceReport {
         [string]$Drive = 'Unknown',
         [string]$SpaceFreed = 'Not measured',
         [bool]$RestartRequired = $false,
-        [string]$TechnicalFile = ''
+        [string[]]$Choices = @(),
+        [string[]]$Details = @()
     )
     $lines = New-Object 'System.Collections.Generic.List[string]'
-    [void]$lines.Add('YAUGERAIO | WINDOWS MAINTENANCE REPORT')
-    [void]$lines.Add('=====================================')
+    [void]$lines.Add('YAUGERAIO 1.5.3 | WINDOWS MAINTENANCE REPORT')
+    [void]$lines.Add('=============================================')
     [void]$lines.Add(('Computer: ' + $ComputerName))
     [void]$lines.Add(('Started:  ' + $StartedAt.ToString('yyyy-MM-dd HH:mm:ss')))
     [void]$lines.Add(('Finished: ' + $FinishedAt.ToString('yyyy-MM-dd HH:mm:ss')))
-    [void]$lines.Add(('Duration: ' + ([math]::Round(($FinishedAt - $StartedAt).TotalMinutes, 1)) + ' minutes'))
+    [void]$lines.Add(('Total time: ' + ([math]::Round(($FinishedAt - $StartedAt).TotalMinutes, 1)) + ' minutes (includes time spent answering prompts)'))
     [void]$lines.Add(('System drive: ' + $Drive))
-    [void]$lines.Add(('Change in available disk space: ' + $SpaceFreed))
-    [void]$lines.Add(('Restart required by Windows Update: ' + $(if ($RestartRequired) { 'YES' } else { 'Not reported' })))
+    [void]$lines.Add(('Change in available drive space: ' + $SpaceFreed))
+    [void]$lines.Add('This is a before-and-after estimate, not an exact amount deleted by YaugerAIO.')
+    [void]$lines.Add(('Restart requested by Windows Update: ' + $(if ($RestartRequired) { 'YES' } else { 'Not reported' })))
     [void]$lines.Add('')
 
     $passed = @($Results | Where-Object { $_.Status -eq 'PASS' }).Count
@@ -198,67 +221,78 @@ function Format-YaugerMaintenanceReport {
     [void]$lines.Add('AT A GLANCE')
     [void]$lines.Add('-----------')
     if ($failures -gt 0) {
-        [void]$lines.Add('Overall: Some maintenance steps failed. Read the next section.')
+        [void]$lines.Add('Some maintenance steps failed. Please review the next steps.')
     } elseif ($warnings -gt 0) {
-        [void]$lines.Add('Overall: Some things still need attention.')
+        [void]$lines.Add('Some items still need attention.')
     } elseif ($checks -gt 0) {
-        [void]$lines.Add('Overall: Some results could not be confirmed.')
+        [void]$lines.Add('Some results could not be confirmed.')
     } elseif ($passed -gt 0) {
-        [void]$lines.Add('Overall: No problems reported by the completed checks.')
+        [void]$lines.Add('No problems were reported by the completed checks.')
     } else {
-        [void]$lines.Add('Overall: No completed checks were recorded.')
+        [void]$lines.Add('No completed checks were recorded.')
     }
     [void]$lines.Add(("Passed: {0} | Warnings: {1} | Failed: {2} | Unverified: {3} | Skipped: {4}" -f $passed,$warnings,$failures,$checks,$skipped))
     [void]$lines.Add('')
+
     [void]$lines.Add('WHAT TO DO NEXT')
     [void]$lines.Add('---------------')
-
-    $actionItems = @($Results | Where-Object {
-        $_.Status -in @('FAIL', 'WARN', 'CHECK') -and -not [string]::IsNullOrWhiteSpace($_.Action)
-    })
-    $actionNumber = 0
-    foreach ($item in $actionItems) {
-        $actionNumber++
-        [void]$lines.Add(('{0}. [{1}] {2}' -f $actionNumber, $item.Status, $item.Name))
+    $followUps = @($Results | Where-Object { $_.Action -and $_.Status -in @('WARN', 'FAIL', 'CHECK', 'SKIP') })
+    $number = 0
+    foreach ($item in $followUps) {
+        $number++
+        [void]$lines.Add(('{0}. [{1}] {2}' -f $number, $item.Status, $item.Name))
         [void]$lines.Add(('   ' + (($item.Action -replace '[\r\n]+', ' ').Trim())))
     }
     if ($RestartRequired) {
-        $actionNumber++
-        [void]$lines.Add(('{0}. [WARN] Restart Windows when you have saved your work to finish installing updates.' -f $actionNumber))
+        $number++
+        [void]$lines.Add(('{0}. Save your work and restart Windows to finish updates.' -f $number))
     }
-    if ($actionNumber -eq 0) {
-        [void]$lines.Add('No specific follow-up action recorded. Review any skipped or unverified checks below.')
-    }
+    if ($number -eq 0) { [void]$lines.Add('No specific follow-up action was recorded.') }
+    [void]$lines.Add('')
 
+    [void]$lines.Add('YOUR CHOICES')
+    [void]$lines.Add('------------')
+    if ($Choices.Count -gt 0) {
+        foreach ($choice in $Choices) { [void]$lines.Add((' - ' + $choice)) }
+    } else { [void]$lines.Add('No interactive choices were recorded.') }
     [void]$lines.Add('')
-    [void]$lines.Add('CHECK RESULTS')
-    [void]$lines.Add('-------------')
+
+    [void]$lines.Add('EACH MAINTENANCE STEP')
+    [void]$lines.Add('---------------------')
     foreach ($item in $Results) {
-        $shortSummary = ([string]$item.Summary -replace '[\r\n]+', ' ').Trim()
-        [void]$lines.Add(('[{0}] {1} - {2}' -f $item.Status, $item.Name, $shortSummary))
+        $summary = ([string]$item.Summary -replace '[\r\n]+', ' ').Trim()
+        $duration = if ($null -ne $item.DurationSeconds -and $item.DurationSeconds -ne '') {
+            (' (about {0} seconds from step start)' -f $item.DurationSeconds)
+        } else { '' }
+        [void]$lines.Add(('[{0}] {1}{2}' -f $item.Status, $item.Name, $duration))
+        [void]$lines.Add(('    ' + $summary))
     }
-    if ($Results.Count -eq 0) {
-        [void]$lines.Add('No maintenance results were recorded.')
-    }
+    if ($Results.Count -eq 0) { [void]$lines.Add('No maintenance results were recorded.') }
     [void]$lines.Add('')
-    [void]$lines.Add('TECHNICAL DETAILS')
-    [void]$lines.Add('-----------------')
-    if (-not [string]::IsNullOrWhiteSpace($TechnicalFile)) {
-        [void]$lines.Add(('Recorded diagnostic details: ' + $TechnicalFile))
-    } else {
-        [void]$lines.Add('No separate technical log was created.')
+
+    [void]$lines.Add('STATUS GUIDE')
+    [void]$lines.Add('------------')
+    [void]$lines.Add('PASS: reported success; WARN: needs attention; FAIL: did not finish successfully.')
+    [void]$lines.Add('CHECK: outcome could not be confirmed; SKIP: not run or interrupted.')
+    [void]$lines.Add('An interrupted Windows scan or repair may leave unfinished Windows servicing work.')
+    [void]$lines.Add('A successful scan does not mean every part of the computer is healthy.')
+    [void]$lines.Add('')
+
+    [void]$lines.Add('DETAILED ACTIVITY AND WINDOWS OUTPUT')
+    [void]$lines.Add('------------------------------------')
+    [void]$lines.Add('For troubleshooting: command messages and recorded activity from this run.')
+    [void]$lines.Add('Progress display updates are not repeated here; final outcomes and tool output are.')
+    if ($Details.Count -eq 0) { [void]$lines.Add('No additional activity was recorded.') }
+    foreach ($detail in $Details) {
+        if (-not [string]::IsNullOrWhiteSpace($detail)) { [void]$lines.Add($detail) }
     }
-    [void]$lines.Add('PASS = check passed  |  WARN = needs attention  |  FAIL = failed')
-    [void]$lines.Add('CHECK = result unconfirmed  |  SKIP = was not run')
-    [void]$lines.Add('A successful scan does not necessarily mean the entire computer is healthy.')
     return ($lines -join [Environment]::NewLine)
 }
 
-# Keep the quick summary and full log separate. Desktop is preferred.
+# Desktop is easiest to find. If we can't write there, try Documents and then TEMP.
 function Save-YaugerMaintenanceReport {
     param(
         [Parameter(Mandatory = $true)][string]$ReportText,
-        [Parameter(Mandatory = $true)][string]$TechnicalText,
         [Parameter(Mandatory = $true)][string]$Timestamp,
         [string[]]$Destinations = @(
             [Environment]::GetFolderPath('Desktop'),
@@ -269,14 +303,12 @@ function Save-YaugerMaintenanceReport {
     foreach ($folder in $Destinations) {
         if ([string]::IsNullOrWhiteSpace($folder) -or -not (Test-Path -LiteralPath $folder -PathType Container)) { continue }
         $reportPath = Join-Path $folder ('YaugerAIO_Report_' + $Timestamp + '.txt')
-        $technicalPath = Join-Path $folder ('YaugerAIO_Technical_' + $Timestamp + '.txt')
         try {
             Set-Content -LiteralPath $reportPath -Value $ReportText -Encoding UTF8 -ErrorAction Stop
-            Set-Content -LiteralPath $technicalPath -Value $TechnicalText -Encoding UTF8 -ErrorAction Stop
-            return [PSCustomObject]@{ ReportPath = $reportPath; TechnicalPath = $technicalPath }
+            return $reportPath
         } catch {
-            # A redirected Desktop or missing permissions can block a write; try the next folder.
-            continue
+            # OneDrive or folder permissions sometimes get in the way. Try the next location.
+            Remove-Item -LiteralPath $reportPath -Force -ErrorAction SilentlyContinue
         }
     }
     throw 'Unable to save the maintenance report to Desktop, Documents, or the temporary directory.'
@@ -309,7 +341,7 @@ function Show-Banner {
     Write-Host $asciiArt
 }
 
-# System checks
+# These checks read information from Windows; they shouldn't change system settings.
 function Check-DiskSpace {
     try {
         $disk = Get-CimInstance -ClassName Win32_LogicalDisk -Filter "DeviceID='${selectedDrive}'"
@@ -521,7 +553,7 @@ function Install-WindowsUpdates {
     }
 }
 
-# CheckHealth looks for component store damage before we offer a repair.
+# First ask Windows whether its repair files are damaged. Don't repair a healthy machine.
 function Get-DISMCheckHealthStatus {
     param(
         [string]$Output,
@@ -534,52 +566,205 @@ function Get-DISMCheckHealthStatus {
     return 'Unknown'
 }
 
-# The initial check is quick. Ask before starting the potentially lengthy repair.
+# Run DISM and SFC separately so we can keep showing a timer and listen for Spacebar.
+# Only show a percent if Windows actually printed one; a moving timer isn't scan progress.
+function Get-YaugerNativePercent {
+    param([string]$Output)
+    if ([string]::IsNullOrWhiteSpace($Output)) { return '' }
+    $found = [regex]::Matches($Output, '(?<!\d)(?<value>100(?:[.,]0+)?|\d{1,2}(?:[.,]\d+)?)\s*%')
+    if ($found.Count -eq 0) { return '' }
+    return ($found[$found.Count - 1].Groups['value'].Value.Replace(',', '.') + '%')
+}
+
+function Read-YaugerSharedText {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return '' }
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::Default, $true)
+        return $reader.ReadToEnd()
+    } catch {
+        return ''
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Test-YaugerSpacePressed {
+    try {
+        if (-not [Console]::IsInputRedirected -and [Console]::KeyAvailable) {
+            return ([Console]::ReadKey($true).Key -eq [ConsoleKey]::Spacebar)
+        }
+    } catch { }
+    return $false
+}
+
+# Stopping the command may leave Windows finishing work behind the scenes. Log it as a skip, not a pass.
+function Stop-YaugerNativeProcess {
+    param([System.Diagnostics.Process]$Process)
+    try {
+        if (-not $Process.HasExited) {
+            & taskkill.exe /PID $Process.Id /T /F 2>&1 | Out-Null
+        }
+    } catch { }
+    try {
+        $Process.Refresh()
+        if (-not $Process.HasExited) { Stop-Process -Id $Process.Id -Force -ErrorAction Stop }
+        [void]$Process.WaitForExit(3000)
+        $Process.Refresh()
+        return $Process.HasExited
+    } catch {
+        return $false
+    }
+}
+
+function Invoke-YaugerNativeTask {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [Parameter(Mandatory = $true)][string]$NextStep,
+        [scriptblock]$SkipRequested = { Test-YaugerSpacePressed }
+    )
+    $outFile = Join-Path ([IO.Path]::GetTempPath()) ('YaugerAIO_' + [guid]::NewGuid().ToString('N') + '.out')
+    $errFile = Join-Path ([IO.Path]::GetTempPath()) ('YaugerAIO_' + [guid]::NewGuid().ToString('N') + '.err')
+    $startedAt = Get-Date
+    $process = $null
+    $state = 'Failed'
+    $exitCode = $null
+    $output = ''
+    $detail = ''
+    $stopConfirmed = $true
+    Write-Host "$Label can sometimes pause while Windows works. The percentage may not change for a while." -ForegroundColor Yellow
+    Write-Host "Press SPACE to stop this task and continue to $NextStep. Stopping a repair may leave work unfinished." -ForegroundColor Yellow
+    try {
+        # Start the command under cmd so Windows can write its output to a file while we watch it.
+        # This also gives us a reliable exit code on both older and newer PowerShell versions.
+        $commandText = $FilePath + ' ' + ($Arguments -join ' ') + ' 1>"' + $outFile + '" 2>"' + $errFile + '"'
+        $startup = New-Object System.Diagnostics.ProcessStartInfo
+        $startup.FileName = 'cmd.exe'
+        $startup.Arguments = '/D /S /C "' + $commandText + '"'
+        $startup.UseShellExecute = $false
+        $startup.CreateNoWindow = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startup
+        if (-not $process.Start()) { throw "Windows could not start $FilePath" }
+        $state = 'Completed'
+        $lastDisplay = ''
+        do {
+            $process.Refresh()
+            if ($process.HasExited) { break }
+            if (& $SkipRequested) {
+                $state = 'Skipped'
+                Write-Host ""
+                Write-Host "Stopping $Label. Windows servicing may need time to settle..." -ForegroundColor Yellow
+                $stopConfirmed = Stop-YaugerNativeProcess -Process $process
+                if (-not $stopConfirmed) { $state = 'StopUnconfirmed' }
+                break
+            }
+            $captured = Read-YaugerSharedText -Path $outFile
+            $percent = Get-YaugerNativePercent -Output $captured
+            $elapsedText = ('{0:hh\:mm\:ss}' -f ((Get-Date) - $startedAt))
+            $progress = if ($percent) { "reported $percent" } else { 'running' }
+            $line = "$Label - $progress | $elapsedText | SPACE: skip to $NextStep"
+            if ($line -ne $lastDisplay) {
+                Write-Host ("`r{0,-100}" -f $line) -NoNewline -ForegroundColor Cyan
+                $lastDisplay = $line
+            }
+            Start-Sleep -Milliseconds 400
+        } while ($true)
+        Write-Host ""
+        if ($state -eq 'Completed') {
+            $process.Refresh()
+            [void]$process.WaitForExit()
+            $process.Refresh()
+            $exitCode = $process.ExitCode
+        }
+        $output = Read-YaugerSharedText -Path $outFile
+        $detail = Read-YaugerSharedText -Path $errFile
+    } catch {
+        $state = 'Failed'
+        $detail += "YaugerAIO could not run or monitor ${Label}: $_"
+        if ($null -ne $process) { [void](Stop-YaugerNativeProcess -Process $process) }
+    } finally {
+        foreach ($file in @($outFile, $errFile)) {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
+        if ($null -ne $process) { $process.Dispose() }
+    }
+    $elapsed = [math]::Round(((Get-Date) - $startedAt).TotalSeconds, 1)
+    $script:log += "$Label | outcome: $state | elapsed: $elapsed seconds | exit code: $exitCode"
+    if ($state -in @('Skipped', 'StopUnconfirmed')) {
+        $script:log += "$Label | Spacebar skip requested; process stopped: $stopConfirmed. Independent Windows servicing may continue."
+    }
+    if ($output) { $script:log += "$Label | captured command output:" + [Environment]::NewLine + $output }
+    if ($detail) { $script:log += "$Label | additional command output:" + [Environment]::NewLine + $detail }
+    return [PSCustomObject]@{
+        State = $state
+        ExitCode = $exitCode
+        Output = ($output + [Environment]::NewLine + $detail)
+        ElapsedSeconds = $elapsed
+    }
+}
+
+# Even the short DISM check can get stuck. Give it the same timer and skip option.
 function Run-DISMCheckHealth {
     Write-Host "Checking Windows repair files (DISM /CheckHealth)..." -ForegroundColor Cyan
     try {
-        $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
-        $exitCode = $LASTEXITCODE
-        $status = Get-DISMCheckHealthStatus -Output $dismOutput -ExitCode $exitCode
-        $script:log += "DISM /CheckHealth status: $status (exit code $exitCode)" + [Environment]::NewLine + $dismOutput
-
+        $task = Invoke-YaugerNativeTask -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/CheckHealth') -Label 'DISM health check' -NextStep 'SFC scan'
+        if ($task.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($task.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'Windows repair check' -Status $(if ($task.State -eq 'Skipped') { 'SKIP' } else { 'CHECK' }) -Summary 'DISM health check interrupted by Spacebar; health was not verified.' -Action 'If Windows repairs still appear active, wait for them to settle before retrying.'
+            return
+        }
+        if ($task.State -ne 'Completed') {
+            Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows repair check could not be started or monitored.' -Action 'Check the detailed history in the report.'
+            return
+        }
+        $status = Get-DISMCheckHealthStatus -Output $task.Output -ExitCode $task.ExitCode
+        $script:log += "DISM /CheckHealth interpretation: $status"
         switch ($status) {
             'Healthy' {
                 Add-MaintenanceResult -Name 'Windows repair check' -Status PASS -Summary 'Windows did not report damage to its repair files.'
                 Write-Host "Windows repair files look healthy. Moving on to SFC." -ForegroundColor Green
             }
             'Repairable' {
+                Add-MaintenanceResult -Name 'Windows repair check' -Status WARN -Summary 'Windows found repairable damage.' -Action 'Check the optional repair result below, or rerun YaugerAIO to attempt repair.'
                 Write-Host "Windows found damage it may be able to repair." -ForegroundColor Yellow
                 Write-Host "Try DISM repair now? This can take 20-30 minutes or longer and may need internet access. (Y/N)" -ForegroundColor Yellow
                 $choice = [Console]::ReadKey($true)
                 if ($choice.KeyChar.ToString().ToUpperInvariant() -eq 'Y') {
+                    Record-YaugerChoice 'DISM repair offered: accepted.'
+                    Start-YaugerStep 'DISM RestoreHealth repair'
                     Invoke-DISMRestoreHealth
                 } else {
-                    Add-MaintenanceResult -Name 'Windows repair check' -Status WARN -Summary 'Repairable Windows damage was found. You chose not to run the repair.' -Action 'Run YaugerAIO again and accept Windows repair, or ask a technician for help.'
+                    Record-YaugerChoice 'DISM repair offered: declined; repair skipped.'
+                    Add-MaintenanceResult -Name 'Windows repair' -Status SKIP -Summary 'You chose not to attempt the optional repair.'
                     Write-Host "Windows repair skipped. Continuing with SFC." -ForegroundColor Yellow
                 }
             }
             'NotRepairable' {
-                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows reported damage that this repair command cannot fix.' -Action 'Have a technician review the DISM details and Windows recovery options.'
+                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'Windows reported damage that the built-in repair cannot fix.' -Action 'Have a technician review the DISM details and Windows recovery options.'
                 Write-Host "Windows reports damage that DISM cannot repair automatically." -ForegroundColor Red
             }
             'Failed' {
-                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary "The Windows repair check failed (DISM exit code $exitCode)." -Action 'Check the technical log, then ask a technician to investigate Windows servicing.'
-                Write-Host "The Windows repair check failed. Review the technical log." -ForegroundColor Red
+                Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary "The Windows repair check failed (DISM exit code $($task.ExitCode))." -Action 'Review the detailed history and have a technician investigate Windows servicing.'
             }
             default {
-                Add-MaintenanceResult -Name 'Windows repair check' -Status CHECK -Summary 'Windows repair check finished, but its result could not be confirmed.' -Action 'Review the DISM details in the technical log before deciding whether to repair.'
-                Write-Host "DISM returned an unrecognized result. Repair was not started." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair check' -Status CHECK -Summary 'Windows repair check finished, but its result was not understood.' -Action 'Review the captured DISM output before assuming Windows is healthy.'
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'The Windows repair check or repair prompt could not finish.' -Action 'Review the technical log and verify that DISM is available.'
-        Log "DISM /CheckHealth or repair prompt failed: $_" "Red"
+        Add-MaintenanceResult -Name 'Windows repair check' -Status FAIL -Summary 'The Windows repair check or prompt failed.' -Action 'Review the detailed activity in the report.'
+        Log "DISM health check failed: $_" "Red"
     }
     Write-Host ""
 }
 
-# A zero exit code is not enough to claim the repair worked; recheck Windows afterward.
+# DISM finishing without an error doesn't prove it fixed anything. Check again afterward.
 function Get-DISMRepairVerificationStatus {
     param(
         [int]$RepairExitCode,
@@ -592,48 +777,49 @@ function Get-DISMRepairVerificationStatus {
 }
 
 function Invoke-DISMRestoreHealth {
-    Write-Host "Repairing Windows files with DISM /RestoreHealth. Please leave this window open..." -ForegroundColor Cyan
+    Write-Host "Repairing Windows files with DISM /RestoreHealth..." -ForegroundColor Cyan
     try {
-        $repairLines = @()
-        & dism.exe /Online /Cleanup-Image /RestoreHealth 2>&1 | Tee-Object -Variable repairLines | Out-Host
-        $repairExitCode = $LASTEXITCODE
-        $repairOutput = $repairLines | Out-String
-        $script:log += "DISM /RestoreHealth exit code: $repairExitCode" + [Environment]::NewLine + $repairOutput
-
-        if ($repairExitCode -ne 0) {
-            Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'DISM could not finish the repair.' -Action 'Review the repair details in the technical log. Windows Update or a technician may be needed.'
-            Write-Host "Windows repair failed. Continuing to SFC." -ForegroundColor Red
+        $task = Invoke-YaugerNativeTask -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/RestoreHealth') -Label 'DISM repair' -NextStep 'SFC scan'
+        if ($task.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($task.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'Windows repair' -Status $(if ($task.State -eq 'Skipped') { 'SKIP' } else { 'CHECK' }) -Summary 'DISM repair was interrupted; any repairs are unverified.' -Action 'Allow Windows servicing to finish before attempting repairs again.'
+            return
+        }
+        if ($task.State -ne 'Completed' -or $task.ExitCode -ne 0) {
+            Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'DISM could not finish the repair successfully.' -Action 'Review the captured DISM output and check Windows Update or consult a technician.'
             return
         }
 
         Write-Host "Checking whether Windows now reports its repair files as healthy..." -ForegroundColor Cyan
-        $verifyOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
-        $verifyExitCode = $LASTEXITCODE
-        $checkStatus = Get-DISMCheckHealthStatus -Output $verifyOutput -ExitCode $verifyExitCode
-        $script:log += "DISM post-repair /CheckHealth status: $checkStatus (exit code $verifyExitCode)" + [Environment]::NewLine + $verifyOutput
-
-        $result = Get-DISMRepairVerificationStatus -RepairExitCode $repairExitCode -CheckStatus $checkStatus
+        $verify = Invoke-YaugerNativeTask -FilePath 'dism.exe' -Arguments @('/Online', '/Cleanup-Image', '/CheckHealth') -Label 'DISM repair verification' -NextStep 'SFC scan'
+        if ($verify.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($verify.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM repair finished, but you interrupted the follow-up check. Repair was not confirmed.' -Action 'Allow Windows servicing to settle, then check Windows health again.'
+            return
+        }
+        $checkStatus = if ($verify.State -eq 'Completed') {
+            Get-DISMCheckHealthStatus -Output $verify.Output -ExitCode $verify.ExitCode
+        } else { 'Unknown' }
+        $result = Get-DISMRepairVerificationStatus -RepairExitCode $task.ExitCode -CheckStatus $checkStatus
         switch ($result) {
             'Repaired' {
-                Add-MaintenanceResult -Name 'Windows repair' -Status PASS -Summary 'Windows found damage, DISM ran a repair, and a follow-up check reported no remaining damage.'
+                Add-MaintenanceResult -Name 'Windows repair' -Status PASS -Summary 'DISM attempted repair and a second Windows check reported no remaining damage.'
                 Write-Host "Windows reports that the repair worked. SFC will check system files next." -ForegroundColor Green
             }
             'Unresolved' {
-                Add-MaintenanceResult -Name 'Windows repair' -Status WARN -Summary 'DISM finished, but Windows still reports damage.' -Action 'Review the technical log and ask a technician to check Windows servicing or recovery options.'
-                Write-Host "DISM finished, but Windows still reports damage." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair' -Status WARN -Summary 'DISM finished but Windows still reports damage.' -Action 'Review the detailed activity and ask a technician to check Windows servicing.'
             }
             default {
-                Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM finished, but the follow-up check could not confirm the repair.' -Action 'Review the DISM results in the technical log before assuming Windows is repaired.'
-                Write-Host "The repair finished, but YaugerAIO could not confirm the result." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'Windows repair' -Status CHECK -Summary 'DISM finished, but Windows could not confirm the repair result.' -Action 'Review the detailed DISM output before assuming Windows is repaired.'
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'The repair or its follow-up check could not finish.' -Action 'Review the technical log and Windows servicing status.'
+        Add-MaintenanceResult -Name 'Windows repair' -Status FAIL -Summary 'The repair or its follow-up check could not finish.' -Action 'Review the detailed activity in the report.'
         Log "DISM /RestoreHealth could not finish: $_" "Red"
     }
 }
 
-# SFC messages vary by Windows version and language. Unknown output isn't a pass.
+# SFC doesn't always return the same wording. If we can't understand it, don't call it a pass.
 function Get-SFCScanStatus {
     param(
         [string]$Output,
@@ -648,46 +834,44 @@ function Get-SFCScanStatus {
 }
 
 function Run-SFCScan {
-    Write-Host "Executing SFC Scan..." -ForegroundColor Cyan
+    Write-Host "Checking Windows system files with SFC..." -ForegroundColor Cyan
     try {
-        # Show SFC's output as it runs, and keep a copy for the technical log.
-        $sfcLines = @()
-        & sfc.exe /scannow 2>&1 | Tee-Object -Variable sfcLines
-        $exitCode = $LASTEXITCODE
-        $sfcOutput = $sfcLines | Out-String
-        $status = Get-SFCScanStatus -Output $sfcOutput -ExitCode $exitCode
-        $script:log += "SFC /scannow status: $status (exit code $exitCode)`n$sfcOutput`n"
-
+        $task = Invoke-YaugerNativeTask -FilePath 'sfc.exe' -Arguments @('/scannow') -Label 'SFC scan' -NextStep 'Windows Update'
+        if ($task.State -in @('Skipped', 'StopUnconfirmed')) {
+            if ($task.State -eq 'StopUnconfirmed') { $script:servicingStopUnconfirmed = $true }
+            Add-MaintenanceResult -Name 'SFC system files' -Status $(if ($task.State -eq 'Skipped') { 'SKIP' } else { 'CHECK' }) -Summary 'System file scan interrupted by Spacebar; the result is unknown.' -Action 'Windows may have unfinished servicing work. Wait until it settles before retrying.'
+            return
+        }
+        if ($task.State -ne 'Completed') {
+            Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'SFC could not start or be monitored.' -Action 'Review the detailed history in the report.'
+            return
+        }
+        $status = Get-SFCScanStatus -Output $task.Output -ExitCode $task.ExitCode
+        $script:log += "SFC scan interpretation: $status"
         switch ($status) {
             'Healthy' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows Resource Protection found no integrity violations.'
-                Write-Host "SFC found no integrity violations." -ForegroundColor Green
+                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows found no damaged protected system files.'
             }
             'Repaired' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'SFC reports that corrupt system files were repaired.'
-                Write-Host "SFC reports that corrupt system files were repaired." -ForegroundColor Green
+                Add-MaintenanceResult -Name 'SFC system files' -Status PASS -Summary 'Windows reports that damaged system files were repaired.'
             }
             'Unresolved' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status WARN -Summary 'SFC could not repair some corrupt system files.' -Action 'Review CBS.log and try DISM /RestoreHealth followed by sfc /scannow.'
-                Write-Host "SFC could not repair all corrupt files. Review CBS.log for details." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'SFC system files' -Status WARN -Summary 'Windows could not repair some system files.' -Action 'Review the report details and consider checking Windows repairs again.'
             }
             'Failed' {
-                Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary "SFC failed or could not finish (exit code $exitCode)." -Action 'Check CBS.log and rerun sfc /scannow from an elevated prompt.'
-                Write-Host "SFC did not complete successfully (exit code $exitCode). Review the output in the log." -ForegroundColor Red
+                Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary "System file scan could not finish (SFC exit code $($task.ExitCode))." -Action 'Review the captured Windows scan output.'
             }
             default {
-                Add-MaintenanceResult -Name 'SFC system files' -Status CHECK -Summary 'SFC completed with unrecognized output.' -Action 'Read the SFC section of the technical log before assuming files are healthy.'
-                Write-Host "SFC completed, but its result was not recognized. Review the output in the log." -ForegroundColor Yellow
+                Add-MaintenanceResult -Name 'SFC system files' -Status CHECK -Summary 'System file scan finished but its result was not recognized.' -Action 'Review the captured SFC output before assuming all files are healthy.'
             }
         }
     } catch {
-        Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'SFC could not start or process its output.' -Action 'Review the technical log and try SFC in an elevated prompt.'
-        Log "SFC scan could not run: $_" "Red"
+        Add-MaintenanceResult -Name 'SFC system files' -Status FAIL -Summary 'The system file scan could not finish.' -Action 'Review the detailed activity in the report.'
+        Log "SFC scan could not finish: $_" "Red"
     }
 }
 
-
-# Cleanup tasks
+# Cleanup jobs start here. Some are optional and some files may be in use.
 function Clear-BrowserCaches {
     try {
         $chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Cache"
@@ -781,7 +965,7 @@ function Get-WindowsTempSize {
             return 0
         }
 
-        # Count hidden files too, but don't count directory entries as files.
+        # Include hidden files in the size estimate, but folders themselves don't have a file size.
         $files = Get-ChildItem -LiteralPath $tempPath -Recurse -File -Force -ErrorAction SilentlyContinue
         $sizeBytes = ($files | Measure-Object -Property Length -Sum).Sum
         if (-not $sizeBytes) { $sizeBytes = 0 }
@@ -839,7 +1023,7 @@ function Clear-WindowsTemp {
     }
 }
 
-# Wrap longer console messages without splitting words.
+# Keep the longer prompts readable in an ordinary PowerShell window.
 function Wrap-Text {
     param(
         [Parameter(Mandatory=$true)]
@@ -863,7 +1047,7 @@ function Wrap-Text {
     return $result
 }
 
-# Guided maintenance run
+# The guided part starts here. Run these in the same order we explain to the user.
 Show-Banner
 
 Write-Host "During this session, we will:" -ForegroundColor White
@@ -876,8 +1060,8 @@ Write-Host "- Check RAM usage." -ForegroundColor White
 Write-Host "- Check GPU driver(s) and version(s)." -ForegroundColor White
 Write-Host "- Log system uptime." -ForegroundColor White
 Write-Host "- Clear browser caches. (Chrome, Edge, Brave, Opera, Firefox)" -ForegroundColor White
-Write-Host "- DISM Scan for Component Store Corruption." -ForegroundColor White
-Write-Host "- SFC Scan to find and fix Windows System Files." -ForegroundColor White
+Write-Host "- Check Windows repair files; offer an optional repair if damage is found." -ForegroundColor White
+Write-Host "- Scan protected Windows files and repair what Windows can." -ForegroundColor White
 Write-Host "- Check for and install Windows Updates." -ForegroundColor White
 Write-Host "" -ForegroundColor White
 
@@ -888,22 +1072,27 @@ Write-Host "Please close all applications and browsers for a clean, smooth Cache
 Start-Sleep -Seconds 2
 Write-Host "Please press Enter to begin." -ForegroundColor Yellow
 [void][System.Console]::ReadKey($true)
+Record-YaugerChoice 'Started maintenance after the initial confirmation.'
 Write-Host ""
 
-# Disk Cleanup (optional)
+# Ask about Disk Cleanup rather than silently removing anything.
+Start-YaugerStep 'Disk Cleanup'
 Write-Host "Would you like to run Disk Cleanup? (Y/N)" -ForegroundColor Yellow
 $key = [Console]::ReadKey($true)
 if ($key.KeyChar.ToString().ToUpper() -eq "Y") {
     $script:runDiskCleanup = $true
+    Record-YaugerChoice 'Disk Cleanup: accepted.'
     Log "✔ User has opted to run Disk Cleanup." "Yellow"
     Run-CleanMgr
 } else {
+    Record-YaugerChoice 'Disk Cleanup: declined.'
     Add-MaintenanceResult -Name 'Disk Cleanup' -Status SKIP -Summary 'Skipped at user request.'
     Log "✖ User has opted not to run Disk Cleanup." "Yellow"
 }
 Write-Host ""
 
-# Windows Temp cleanup (optional)
+# Let the user decide whether to clear TEMP files after seeing the estimated size.
+Start-YaugerStep 'Windows temporary-file cleanup'
 $tempSize = Get-WindowsTempSize
 if ($tempSize -gt 0) {
     if ($tempSize -gt 1000) {
@@ -916,7 +1105,8 @@ if ($tempSize -gt 0) {
     Write-Host ""
     $tempChoice = [Console]::ReadKey($true)
     if ($tempChoice.KeyChar.ToString().ToUpper() -eq "Y") {
-        # Offer to close apps that may be holding temp files open.
+        Record-YaugerChoice "Windows Temp cleanup: accepted. About $displaySize measured before cleanup."
+        # Ask before closing anything. Unsaved work in those apps could be lost.
         $tempLockingApps = Get-TempLockingProcesses
         if ($tempLockingApps.Count -gt 0) {
             Write-Host "`nThe following applications are currently running and may block temp file clearance:" -ForegroundColor Yellow
@@ -927,23 +1117,34 @@ if ($tempSize -gt 0) {
             Write-Host "Would you like to automatically close these applications before clearing temp files? (Y/N)" -ForegroundColor Yellow
             $retryKey = [Console]::ReadKey($true)
             if ($retryKey.KeyChar.ToString().ToUpper() -eq "Y") {
+                Record-YaugerChoice 'Close running applications that may lock temporary files: accepted.'
                 foreach ($app in $tempLockingApps) {
                     Write-Host "Closing $($app.FriendlyName)..." -ForegroundColor Cyan
-                    Get-Process | Where-Object { $_.ProcessName.ToLower() -eq $app.ProcessName } | Stop-Process -Force -ErrorAction SilentlyContinue
+                    try {
+                        Get-Process | Where-Object { $_.ProcessName.ToLower() -eq $app.ProcessName } | Stop-Process -Force -ErrorAction Stop
+                        $script:log += "Requested application closure: $($app.FriendlyName)"
+                    } catch {
+                        Log "Could not close $($app.FriendlyName): $_" 'Yellow'
+                    }
                 }
                 Start-Sleep -Seconds 2
             } else {
+                Record-YaugerChoice 'Close running applications that may lock temporary files: declined.'
                 Log "✖ User chose not to close running applications. Proceeding to clear available temp files." "Yellow"
             }
         }
         Clear-WindowsTemp
+        $afterTempSize = Get-WindowsTempSize
+        $tempDifference = [math]::Round(($tempSize - $afterTempSize), 2)
+        $tempChangeText = "TEMP contained about $tempSize MB before and $afterTempSize MB after; change $tempDifference MB (estimate)."
+        $script:log += $tempChangeText
         switch ($script:tempCleanupOutcome) {
             'PASS' {
-                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status PASS -Summary 'Attempted cleanup completed with no reported file deletion errors.'
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status PASS -Summary "Cleanup reported no deletion errors. $tempChangeText"
                 Log "✔ Windows Temp cleanup completed." "Cyan"
             }
             'WARN' {
-                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status WARN -Summary 'Some temp files or links were skipped.' -Action 'Close apps using temporary files and retry if storage remains low.'
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status WARN -Summary "Some temp files or links were skipped. $tempChangeText" -Action 'Close apps using temporary files and retry if storage remains low.'
                 Log "Windows Temp cleanup was only partially completed." "Yellow"
             }
             'SKIP' {
@@ -955,35 +1156,43 @@ if ($tempSize -gt 0) {
             }
         }
     } else {
+        Record-YaugerChoice "Windows Temp cleanup: declined (about $displaySize available)."
         Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'User declined temporary-file cleanup.'
         Log "✖ User chose not to clear Windows Temp files." "Yellow"
     }
 } else {
+    Record-YaugerChoice 'Windows Temp cleanup: not offered because no removable size was measured.'
     Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'No removable TEMP file size was measured, or the directory was unavailable.'
     Log "No Windows Temp files were measured for cleanup." "Cyan"
 }
 Write-Host ""
 
-# Check free disk space.
+# Find out how much room is left on the Windows drive.
+Start-YaugerStep 'Disk space'
 Check-DiskSpace
-# Sample CPU usage.
+# CPU usage is just a snapshot; a high number here might be temporary.
+Start-YaugerStep 'CPU usage'
 Check-CPUUsage
-# Flush the DNS resolver cache.
+# Clear cached DNS lookups so Windows can fetch fresh ones.
+Start-YaugerStep 'DNS cache flush'
 Flush-DNSCache
-# Sample memory usage.
+# Same deal with memory: this is a reading from right now, not a stress test.
+Start-YaugerStep 'Memory usage'
 Check-RAMUsage
 
 
 Write-Host ""
 
-# Check the installed graphics drivers.
+# Show what's installed; an older driver date doesn't necessarily mean it's broken.
+Start-YaugerStep 'Graphics drivers'
 Check-GPUDrivers
-Write-Host ""  # Blank line between GPU and System Uptime
-# Check how long Windows has been running.
+Write-Host ""  # Leave a bit of space before the next result.
+# Long uptimes are worth mentioning, especially when updates need a restart.
+Start-YaugerStep 'Windows uptime'
 Check-SystemUptime
-Write-Host ""  # Blank line between uptime alerts and Cache Smash
+Write-Host ""  # Keep the next section separate from the uptime note.
 
-# Original Cache Smash animation.
+# Keep the original Cache Smash animation. It's part of the fun.
 $endTime = (Get-Date).AddSeconds(5)
 $dotStates = @(".", "..", "...")
 $dotIndex = 0
@@ -996,30 +1205,42 @@ while ((Get-Date) -lt $endTime) {
 Write-Host ""
 Start-Sleep -Seconds 2
 
-# Try to clear browser caches.
+# Browser files can stay locked. Record what we tried, not a guaranteed cleanup.
+Start-YaugerStep 'Browser cache cleanup'
 Clear-BrowserCaches
 
-# Explain the DISM check before it starts.
+# Tell the user what this scan is for before Windows takes over the screen.
 Write-Host ""
 Write-Host "We'll check Windows repair files and offer to fix any repairable damage found." -ForegroundColor Yellow
 Write-Host "A repair only starts if you agree to it; it can take a while." -ForegroundColor Yellow
 Start-Sleep -Seconds 3
 Write-Host ""
 
-# Check component store health with DISM.
+# Ask Windows whether its repair files are healthy, then offer a fix if needed.
+Start-YaugerStep 'DISM health check'
 Run-DISMCheckHealth
 
 Write-Host ""  
 
-# Run the Windows system file check.
-Run-SFCScan
+# After DISM, let SFC check the protected Windows files.
+if ($script:servicingStopUnconfirmed) {
+    Add-MaintenanceResult -Name 'SFC system files' -Status SKIP -Summary 'Skipped for safety because a previous DISM process may still be running.'
+} else {
+    Start-YaugerStep 'SFC system file scan'
+    Run-SFCScan
+}
 
 Write-Host ""  
 
-# Check Windows Update and attempt installation.
-Install-WindowsUpdates
+# Finish with Windows Update. It can take a while and might require a reboot.
+if ($script:servicingStopUnconfirmed) {
+    Add-MaintenanceResult -Name 'Windows Update' -Status SKIP -Summary 'Skipped for safety because a Windows servicing process could not be confirmed stopped.'
+} else {
+    Start-YaugerStep 'Windows Update'
+    Install-WindowsUpdates
+}
 
-# Write both reports after the last maintenance step.
+# Write everything into one file so nobody has to hunt through two logs.
 Write-Host ""
 $spaceChangeFormatted = 'Not measured'
 try {
@@ -1048,20 +1269,11 @@ Log ("Total script runtime: " + ($finishedAt - $script:StartTime).ToString()) "C
 Log "=============================================" "Cyan"
 Log "YaugerAIO maintenance workflow completed." "Blue"
 
-$technicalFileName = "YaugerAIO_Technical_$timestamp.txt"
-$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceChangeFormatted -RestartRequired $script:needsRestart -TechnicalFile $technicalFileName
-$technicalText = @(
-    'YaugerAIO | Technical Diagnostic Log',
-    ('Computer: ' + $env:COMPUTERNAME),
-    ('Started: ' + $script:StartTime.ToString('yyyy-MM-dd HH:mm:ss')),
-    'For a summary and recommended actions, open the accompanying YaugerAIO_Report file.',
-    '============================================================'
-) + $script:log
+$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceChangeFormatted -RestartRequired $script:needsRestart -Choices $script:choices -Details $script:log
 try {
-    $savedFiles = Save-YaugerMaintenanceReport -ReportText $reportText -TechnicalText ($technicalText -join [Environment]::NewLine) -Timestamp $timestamp
+    $reportPath = Save-YaugerMaintenanceReport -ReportText $reportText -Timestamp $timestamp
     Write-Host ""
-    Write-Host "Readable maintenance report: $($savedFiles.ReportPath)" -ForegroundColor Green
-    Write-Host "Recorded technical details:   $($savedFiles.TechnicalPath)" -ForegroundColor Cyan
+    Write-Host "Your complete maintenance report: $reportPath" -ForegroundColor Green
 } catch {
     Write-Host "Unable to save maintenance report: $_" -ForegroundColor Red
 }
@@ -1073,7 +1285,7 @@ Write-Host ""
 try {
     Stop-Transcript
 } catch {
-    # A transcript isn't started on every launch.
+    # Not every run has a PowerShell transcript. Don't fail just because there isn't one.
 }
 
 

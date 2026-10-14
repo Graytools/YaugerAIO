@@ -24,13 +24,13 @@ Describe 'YaugerAIO release smoke tests' {
     It 'has the expected Gallery module identity' {
         $manifest = Test-ModuleManifest -Path $manifestPath -ErrorAction Stop
         $manifest.Name | Should -Be 'YaugerAIO'
-        $manifest.Version.ToString() | Should -Be '1.5.2'
+        $manifest.Version.ToString() | Should -Be '1.5.3'
         $manifest.Guid.ToString() | Should -Be '61202a7e-012b-4a64-888e-5dbacee33014'
     }
 
     It 'keeps the bundled maintenance script version in sync with the module' {
         $source = Get-Content -LiteralPath $scriptPath -Raw
-        $source | Should -Match '(?m)^\.VERSION 1\.5\.2\r?$'
+        $source | Should -Match '(?m)^\.VERSION 1\.5\.3\r?$'
     }
 
     It 'imports the module without running the maintenance workflow' {
