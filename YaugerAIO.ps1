@@ -832,6 +832,7 @@ if ($key.KeyChar.ToString().ToUpper() -eq "Y") {
     Log "✔ User has opted to run Disk Cleanup." "Yellow"
     Run-CleanMgr
 } else {
+    Add-MaintenanceResult -Name 'Disk Cleanup' -Status SKIP -Summary 'Skipped at user request.'
     Log "✖ User has opted not to run Disk Cleanup." "Yellow"
 }
 Write-Host ""
@@ -870,12 +871,30 @@ if ($tempSize -gt 0) {
             }
         }
         Clear-WindowsTemp
-        Log "✔ Windows Temp Files have been cleared." "Yellow"
+        switch ($script:tempCleanupOutcome) {
+            'PASS' {
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status PASS -Summary 'Attempted cleanup completed with no reported file deletion errors.'
+                Log "✔ Windows Temp cleanup completed." "Cyan"
+            }
+            'WARN' {
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status WARN -Summary 'Some temp files or links were skipped.' -Action 'Close apps using temporary files and retry if storage remains low.'
+                Log "Windows Temp cleanup was only partially completed." "Yellow"
+            }
+            'SKIP' {
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'TEMP directory was unavailable; no files were deleted.'
+            }
+            default {
+                Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status FAIL -Summary 'Cleanup failed or was blocked for safety.' -Action 'Inspect TEMP path and technical log; do not manually delete unknown directories.'
+                Log "Windows Temp cleanup was not completed." "Red"
+            }
+        }
     } else {
+        Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'User declined temporary-file cleanup.'
         Log "✖ User chose not to clear Windows Temp files." "Yellow"
     }
 } else {
-    Log "✔ No clearable Windows Temp files found." "Cyan"
+    Add-MaintenanceResult -Name 'Windows Temp cleanup' -Status SKIP -Summary 'No removable TEMP file size was measured, or the directory was unavailable.'
+    Log "No Windows Temp files were measured for cleanup." "Cyan"
 }
 Write-Host ""
 
@@ -935,7 +954,7 @@ Write-Host ""  # Extra line break before Windows Updates
 Install-WindowsUpdates
 
 # -------------------------------
-# Final Logging and Summary
+# Final Logging and Human-Readable Report
 # -------------------------------
 Write-Host ""
 $finalFree = (Get-PSDrive -Name $selectedDrive.Substring(0,1)).Free
@@ -946,25 +965,32 @@ if ($spaceFreedBytes -ge 1GB) {
 } else {
     $spaceFreedFormatted = ("{0:N2} MB" -f ($spaceFreedBytes / 1MB))
 }
-Log "✔ Total space freed during this session: $spaceFreedFormatted" "Cyan"
-
-$duration = (Get-Date) - $script:StartTime
-Log "⏱ Total script runtime: $($duration.ToString())" "Cyan"
-
-$script:log | Out-File -FilePath $logFile -Encoding UTF8
-
+Log "Estimated drive space reclaimed this session: $spaceFreedFormatted" "Cyan"
+$finishedAt = Get-Date
+Log ("Total script runtime: " + ($finishedAt - $script:StartTime).ToString()) "Cyan"
 Log "=============================================" "Cyan"
-Log "YaugerAIO tasks completed." "Blue"
-Write-Host ""
+Log "YaugerAIO maintenance workflow completed." "Blue"
 
-$thankYouMessage = "Thanks for trying out my Windows AIO Maintenance Tool. For feature requests, or bug reports, please feel welcome to reach out to me at rick.yauger@outlook.com - alternatively, pull requests are welcome."
-$wrappedThankYou = Wrap-Text -Text $thankYouMessage -Width 130
-Log $wrappedThankYou "Blue"
+$technicalFileName = "YaugerAIO_Technical_$timestamp.txt"
+$reportText = Format-YaugerMaintenanceReport -Results $script:maintenanceResults -StartedAt $script:StartTime -FinishedAt $finishedAt -ComputerName $env:COMPUTERNAME -Drive $selectedDrive -SpaceFreed $spaceFreedFormatted -RestartRequired $script:needsRestart -TechnicalFile $technicalFileName
+$technicalText = @(
+    'YaugerAIO | Technical Diagnostic Log',
+    ('Computer: ' + $env:COMPUTERNAME),
+    ('Started: ' + $script:StartTime.ToString('yyyy-MM-dd HH:mm:ss')),
+    'For a summary and recommended actions, open the accompanying YaugerAIO_Report file.',
+    '============================================================'
+) + $script:log
+try {
+    $savedFiles = Save-YaugerMaintenanceReport -ReportText $reportText -TechnicalText ($technicalText -join [Environment]::NewLine) -Timestamp $timestamp
+    Write-Host ""
+    Write-Host "Readable maintenance report: $($savedFiles.ReportPath)" -ForegroundColor Green
+    Write-Host "Full technical details:       $($savedFiles.TechnicalPath)" -ForegroundColor Cyan
+} catch {
+    Write-Host "Unable to save maintenance report: $_" -ForegroundColor Red
+}
 Write-Host ""
-
-$feedbackMessage = "Check the log file on your desktop for details."
-$wrappedFeedback = Wrap-Text -Text $feedbackMessage -Width 130
-Log $wrappedFeedback "Blue"
+$thankYouMessage = "Thanks for trying out my Windows AIO Maintenance Tool. For feature requests or bug reports, please feel welcome to reach out or open an issue at https://github.com/Graytools/YaugerAIO."
+Write-Host (Wrap-Text -Text $thankYouMessage -Width 130) -ForegroundColor Blue
 Write-Host ""
 
 try {
