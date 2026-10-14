@@ -344,16 +344,25 @@ function Install-WindowsUpdates {
 # Log full output Message and display alert
 # --------------------------------------------------------------
 function Run-DISMCheckHealth {
+    Write-Host "Checking Windows component store health (DISM /CheckHealth)..." -ForegroundColor Cyan
     $dismOutput = & dism.exe /Online /Cleanup-Image /CheckHealth 2>&1 | Out-String
-    $dismOutputLines = $dismOutput -split "`n"
-    $script:log += "DISM /CheckHealth Output:`n" + ($dismOutputLines -join "`n") + "`n"
-    Write-Host ""
-    if ($dismOutput -match "No component store corruption detected") {
-        Write-Host "No component store corruption found, so we're moving onto the SFC Scan." -ForegroundColor Yellow
+    $exitCode = $LASTEXITCODE
+    $script:log += "DISM /CheckHealth Output:`n$dismOutput`n"
+
+    if ($exitCode -ne 0) {
+        Write-Host "DISM /CheckHealth failed (exit code $exitCode). Review the output in the log." -ForegroundColor Red
+    }
+    elseif ($dismOutput -match "No component store corruption detected") {
+        Write-Host "No component store corruption detected. Moving on to SFC." -ForegroundColor Green
+    }
+    elseif ($dismOutput -match "component store is not repairable") {
+        Write-Host "DISM reports that the component store is not repairable. Further troubleshooting is required." -ForegroundColor Red
+    }
+    elseif ($dismOutput -match "component store is repairable") {
+        Write-Host "DISM detected repairable corruption. /CheckHealth does not repair it; consider DISM /RestoreHealth." -ForegroundColor Yellow
     }
     else {
-        $fixCount = ($dismOutputLines | Where-Object { $_ -match "Beginning Verify and Repair transaction" }).Count
-        Write-Host "DISM Scan identified and repaired $fixCount items in Windows Component Store." -ForegroundColor Yellow
+        Write-Host "DISM completed, but its health status was not recognized. See the logged output." -ForegroundColor Yellow
     }
     Write-Host ""
 }
