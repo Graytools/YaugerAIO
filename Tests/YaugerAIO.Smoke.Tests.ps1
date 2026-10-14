@@ -30,7 +30,10 @@ Describe 'YaugerAIO release smoke tests' {
 
     It 'keeps the bundled maintenance script version in sync with the module' {
         $source = Get-Content -LiteralPath $scriptPath -Raw
-        $source | Should -Match '(?m)^\.VERSION 1\.5\.1 {
+        $source | Should -Match '(?m)^\.VERSION 1\.5\.1\r?$'
+    }
+
+    It 'imports the module without running the maintenance workflow' {
         $module = Import-Module -Name $manifestPath -Force -PassThru -ErrorAction Stop
         $module.Name | Should -Be 'YaugerAIO'
     }
