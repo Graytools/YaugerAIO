@@ -303,7 +303,13 @@ function Check-DiskSpace {
         $totalGB = [math]::Round($disk.Size / 1GB, 2)
         $freePercentage = [math]::Round(($disk.FreeSpace / $disk.Size) * 100, 2)
         Log "${selectedDrive} Drive Free Space: $freeGB GB out of $totalGB GB ($freePercentage% free)" "Cyan"
+        if ($freePercentage -lt 10) {
+            Add-MaintenanceResult -Name 'System disk space' -Status WARN -Summary "$freeGB GB free ($freePercentage%) on $selectedDrive." -Action 'Free up space or expand the system drive; target at least 10% free space.'
+        } else {
+            Add-MaintenanceResult -Name 'System disk space' -Status PASS -Summary "$freeGB GB free out of $totalGB GB on $selectedDrive ($freePercentage%)."
+        }
     } catch {
+        Add-MaintenanceResult -Name 'System disk space' -Status FAIL -Summary 'Could not retrieve drive capacity.' -Action 'Check Disk Management and review the technical log.'
         Log "Failed to retrieve disk space info for ${selectedDrive}: $_" "Red"
     }
 }
@@ -313,7 +319,13 @@ function Check-CPUUsage {
         $cpu = Get-Counter '\Processor(_Total)\% Processor Time'
         $usage = [math]::Round($cpu.CounterSamples.CookedValue, 2)
         Log "CPU Usage: $usage%" "Cyan"
+        if ($usage -ge 90) {
+            Add-MaintenanceResult -Name 'CPU usage' -Status WARN -Summary "High CPU usage at $usage% during this sample." -Action 'Check Task Manager for CPU-intensive processes if performance is slow.'
+        } else {
+            Add-MaintenanceResult -Name 'CPU usage' -Status PASS -Summary "CPU usage was $usage% at the time of sampling."
+        }
     } catch {
+        Add-MaintenanceResult -Name 'CPU usage' -Status FAIL -Summary 'Unable to measure CPU usage.' -Action 'Check Windows Performance Monitor and the technical log.'
         Log "Failed to retrieve CPU usage: $_" "Red"
     }
 }
@@ -323,12 +335,17 @@ function Flush-DNSCache {
         Write-Host "Flushing DNS cache..." -ForegroundColor Cyan
         $before = (Get-DnsClientCache).Count
         ipconfig /flushdns | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "ipconfig /flushdns exited with code $LASTEXITCODE"
+        }
         $after = (Get-DnsClientCache).Count
         $flushed = $before - $after
         Write-Host "✔ DNS cache flushed." -ForegroundColor Cyan
         Write-Host "Entries removed: $flushed" -ForegroundColor Cyan
+        Add-MaintenanceResult -Name 'DNS cache' -Status PASS -Summary 'ipconfig /flushdns completed successfully.'
         Write-Host ""
     } catch {
+        Add-MaintenanceResult -Name 'DNS cache' -Status FAIL -Summary 'Unable to confirm that the DNS cache was flushed.' -Action 'Retry ipconfig /flushdns in an elevated command prompt if name resolution is failing.'
         Log "Failed to flush DNS cache: $_" "Red"
     }
 }
@@ -341,12 +358,18 @@ function Check-RAMUsage {
         $used = [math]::Round($total - $free, 2)
         $percentUsed = [math]::Round(($used / $total) * 100, 2)
         Log "RAM Usage: $used GB of $total GB ($percentUsed%)" "Cyan"
+        if ($percentUsed -gt 80) {
+            Add-MaintenanceResult -Name 'Memory usage' -Status WARN -Summary "$used of $total GB in use ($percentUsed%) at sampling time." -Action 'Review memory-heavy apps in Task Manager if the PC is slow.'
+        } else {
+            Add-MaintenanceResult -Name 'Memory usage' -Status PASS -Summary "$used of $total GB in use ($percentUsed%) at sampling time."
+        }
         Start-Sleep -Seconds 2
         if ($percentUsed -gt 80) {
             Log "Random Access Memory is currently utilized above 80%. Please check and see if you have 14 million tabs open." "Yellow"
             Start-Sleep -Seconds 5
         }
     } catch {
+        Add-MaintenanceResult -Name 'Memory usage' -Status FAIL -Summary 'Could not measure physical memory usage.' -Action 'Review Task Manager memory usage and the technical log.'
         Log "Failed to retrieve RAM usage: $_" "Red"
     }
 }
@@ -366,21 +389,26 @@ function Check-GPUDrivers {
                 $releaseDate = [datetime]$gpu.DriverDate
                 $monthsDifference = (New-TimeSpan -Start $releaseDate -End (Get-Date)).TotalDays / 30
                 if ($monthsDifference -ge 6) {
+                    Add-MaintenanceResult -Name "GPU driver: $($gpu.Name)" -Status WARN -Summary "Driver date is approximately $([math]::Round($monthsDifference)) months old; this does not prove an update is available." -Action 'Check the GPU vendor support page for a newer recommended driver if you have graphics issues.'
                     Log "GPU Driver release more than 6 months ago. Please check your GPU Vendor for driver updates." "Red"
                 }
                 elseif ($monthsDifference -ge 3) {
+                    Add-MaintenanceResult -Name "GPU driver: $($gpu.Name)" -Status CHECK -Summary "Driver date is approximately $([math]::Round($monthsDifference)) months old." -Action 'If you are troubleshooting graphics problems, compare the installed driver with the vendor release.'
                     Log "GPU Driver release more than 3 months ago. Please check your GPU Vendor for driver updates." "Yellow"
                 }
                 else {
+                    Add-MaintenanceResult -Name "GPU driver: $($gpu.Name)" -Status PASS -Summary "Installed driver date is within the last three months."
                     Log "GPU Driver release is within the last 3 months." "Cyan"
                 }
             }
             else {
+                Add-MaintenanceResult -Name "GPU driver: $($gpu.Name)" -Status CHECK -Summary 'Driver date was not available.' -Action 'Review graphics driver details in Device Manager if necessary.'
                 Log "GPU Driver release date not available." "Yellow"
             }
         }
         Write-Host ""
     } catch {
+        Add-MaintenanceResult -Name 'GPU driver checks' -Status FAIL -Summary 'Could not query installed graphics drivers.' -Action 'Inspect graphics adapters in Device Manager.'
         Log "Failed to retrieve GPU driver info: $_" "Red"
     }
 }
@@ -390,6 +418,11 @@ function Check-SystemUptime {
         $uptime = (Get-Date) - (gcim Win32_OperatingSystem).LastBootUpTime
         $days = [math]::Round($uptime.TotalDays, 2)
         Log "System Uptime: $days days" "Cyan"
+        if ($days -ge 7) {
+            Add-MaintenanceResult -Name 'System uptime' -Status CHECK -Summary "Windows has been running for $days days." -Action 'Restart when convenient if updates require it or the system is misbehaving.'
+        } else {
+            Add-MaintenanceResult -Name 'System uptime' -Status PASS -Summary "Windows has been running for $days days."
+        }
         Start-Sleep -Seconds 4
         if ($days -lt 3) {
             Log "Great job keeping up on your reboots. Keep it up!" "Yellow"
@@ -416,6 +449,7 @@ For best results, restart at least once every few days.
         }
         Start-Sleep -Seconds 10
     } catch {
+        Add-MaintenanceResult -Name 'System uptime' -Status FAIL -Summary 'Could not determine the last Windows boot time.' -Action 'Check system information or Event Viewer.'
         Log "Failed to retrieve system uptime: $_" "Red"
     }
 }
