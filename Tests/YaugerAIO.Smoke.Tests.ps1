@@ -68,6 +68,16 @@ Describe 'YaugerAIO release smoke tests' {
         $moduleSource | Should -Match "'-ExecutionPolicy', 'Bypass'"
     }
 
+    It 'checks admin privileges before doing cosmetic console setup' {
+        $source = Get-Content -LiteralPath $scriptPath -Raw
+        $uacCheck = $source.IndexOf('[Security.Principal.WindowsPrincipal]')
+        $consoleResize = $source.IndexOf('$host.UI.RawUI.BufferSize')
+        $uacCheck | Should -BeGreaterThan 0
+        $consoleResize | Should -BeGreaterThan $uacCheck
+        $source | Should -Match 'Start-Process -FilePath \\$psCmd -Verb RunAs'
+        $source | Should -Match 'No maintenance was started'
+    }
+
     It 'refuses to run Windows maintenance on a non-Windows system' -Skip:($env:OS -eq 'Windows_NT') {
         Import-Module -Name $manifestPath -Force -ErrorAction Stop
         { Start-YaugerAIOWorkflow } | Should -Throw '*requires Windows*'
