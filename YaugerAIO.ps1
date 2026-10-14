@@ -11,35 +11,40 @@
 Initial release to PowerShell Gallery.
 #>
 
-# Set console buffer and window size.
-$desiredWidth = 130
-$desiredHeight = 50
-$host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size($desiredWidth, $desiredHeight)
-$host.UI.RawUI.WindowSize = New-Object Management.Automation.Host.Size($desiredWidth, $desiredHeight)
+# --- Request administrator approval before touching console settings ---
+# This also supports users who launch the script from an unelevated CMD or PowerShell window.
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $psCmd = if ($PSVersionTable.PSEdition -eq 'Core') { 'pwsh.exe' } else { 'powershell.exe' }
+    $scriptPath = $PSCommandPath
+    if ([string]::IsNullOrWhiteSpace($scriptPath)) {
+        Write-Host 'YaugerAIO must be run from a saved script file to request administrator approval.' -ForegroundColor Red
+        return
+    }
+
+    # Quoting preserves paths containing spaces; -NoExit keeps the results visible.
+    $quotedScriptPath = '"' + $scriptPath + '"'
+    try {
+        Start-Process -FilePath $psCmd -Verb RunAs -ArgumentList @('-NoProfile', '-NoExit', '-ExecutionPolicy', 'Bypass', '-File', $quotedScriptPath) -ErrorAction Stop
+    } catch {
+        Write-Host "YaugerAIO did not receive administrator approval. No maintenance was started: $_" -ForegroundColor Yellow
+    }
+    return
+}
+
+# Console resizing is cosmetic, and can fail in Windows Terminal or small windows.
+# Do not stop system maintenance if the console cannot be resized.
+try {
+    $desiredWidth = 130
+    $desiredHeight = 50
+    $host.UI.RawUI.BufferSize = New-Object Management.Automation.Host.Size($desiredWidth, $desiredHeight)
+    $host.UI.RawUI.WindowSize = New-Object Management.Automation.Host.Size($desiredWidth, $desiredHeight)
+} catch {
+    # Keep the existing console size if resizing is unsupported.
+}
 
 # Set the default runspace for asynchronous handlers.
 $global:myRunspace = [runspace]::DefaultRunspace
 [runspace]::DefaultRunspace = $global:myRunspace
-
-# --- Auto-Elevation Snippet Start ---
-if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
-    $psCmd = if ($PSVersionTable.PSEdition -eq 'Core') { "pwsh.exe" } else { "powershell.exe" }
-    $scriptPath = $MyInvocation.MyCommand.Path
-    if (-not $scriptPath) {
-        if ($PSCommandPath) {
-            $scriptPath = $PSCommandPath
-        }
-        else {
-            Write-Host "This script must be run from a file to auto-elevate." -ForegroundColor Red
-            exit
-        }
-    }
-    # Enclose the script path in quotes to handle spaces.
-    $quotedScriptPath = '"' + $scriptPath + '"'
-    Start-Process $psCmd -Verb RunAs -ArgumentList "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $quotedScriptPath
-    exit
-}
-# --- Auto-Elevation Snippet End ---
 
 # Define Next Steps for the overall workflow.
 $script:NextStepFor = @{
