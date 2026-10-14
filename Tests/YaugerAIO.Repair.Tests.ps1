@@ -83,7 +83,7 @@ Describe 'DISM repair confirmation' {
         }, $true)
         $source = $runner.Extent.Text
         $source | Should -Match "'Repairable'[\s\S]*\[Console\]::ReadKey"
-        $source | Should -Match "if \(\$choice\.KeyChar"
+        $source | Should -Match 'if \(\$choice\.KeyChar'
         $source | Should -Match 'Invoke-DISMRestoreHealth'
     }
 }
